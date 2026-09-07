@@ -69,7 +69,7 @@ export default function App() {
           <div className="anim-stagger" style={{ animationDelay: '0.1s' }}>
             <VortxLogo />
             <span className="text-white text-[10px] md:text-xs tracking-[0.4em] mt-1 block font-light">
-              V O R T X
+              C O R D O N
             </span>
           </div>
 
@@ -126,7 +126,7 @@ export default function App() {
               >
                 Forging Tomorrow<br />
                 Virtual Horizon<br />
-                VortxLab Creations
+                Cordon
               </h1>
             </div>
           </div>

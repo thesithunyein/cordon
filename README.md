@@ -1,6 +1,6 @@
-# V O R T X — VortxLab Creations
+# C O R D O N
 
-A full-screen immersive landing page for the creative-tech studio **VortxLab Creations**.
+A full-screen immersive landing page for **Cordon**.
 
 ## Features
 
