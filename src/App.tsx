@@ -5,7 +5,7 @@ function CordonLogo() {
     <img
       src="/cordon-logo.png"
       alt="Cordon"
-      className="w-14 h-14 md:w-16 md:h-16 object-contain"
+      className="w-24 h-24 md:w-28 md:h-28 object-contain"
     />
   )
 }
@@ -54,7 +54,7 @@ export default function App() {
           {/* Logo */}
           <div className="anim-stagger" style={{ animationDelay: '0.1s' }}>
             <CordonLogo />
-            <span className="text-white text-[10px] md:text-xs tracking-[0.4em] mt-1 block font-light">
+            <span className="text-white text-xs md:text-sm tracking-[0.4em] mt-2 block font-light">
               C O R D O N
             </span>
           </div>
