@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="public/cordon-logo.png" alt="Cordon logo" width="120">
+</p>
+
 # C O R D O N
 
 A full-screen immersive landing page for **Cordon**.
@@ -7,7 +11,7 @@ A full-screen immersive landing page for **Cordon**.
 - Looping full-screen background video
 - Glassmorphism octagonal (`clip-path`) button system — `.btn-cut`, `.btn-cut-border`, `.btn-cut-sm`
 - Staggered fade-up entrance animations on every element
-- Custom vortex SVG logo with "V O R T X" wordmark
+- Cordon "C" shield mark (logo + favicon)
 - Fully responsive: single column on mobile → dual nav + 3-column bottom row on desktop
 
 ## Tech Stack

@@ -1,26 +1,12 @@
 import { ArrowRight } from 'lucide-react'
 
-function VortxLogo() {
+function CordonLogo() {
   return (
-    <svg
-      width="56"
-      height="56"
-      viewBox="0 0 256 256"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className="w-14 h-14 md:w-16 md:h-16"
-    >
-      <g fill="white">
-        {/* Top-left quarter circle */}
-        <path d="M128 128 Q128 0 0 0 L0 64 Q64 64 64 128 Z" />
-        {/* Top-right quarter circle */}
-        <path d="M128 128 Q128 0 256 0 L256 64 Q192 64 192 128 Z" />
-        {/* Bottom-left quarter circle */}
-        <path d="M128 128 Q128 256 0 256 L0 192 Q64 192 64 128 Z" />
-        {/* Bottom-right quarter circle */}
-        <path d="M128 128 Q128 256 256 256 L256 192 Q192 192 192 128 Z" />
-      </g>
-    </svg>
+    <img
+      src="/cordon-logo.png"
+      alt="Cordon"
+      className="w-14 h-14 md:w-16 md:h-16 object-contain"
+    />
   )
 }
 
@@ -67,7 +53,7 @@ export default function App() {
         <nav className="relative z-10 flex items-center justify-between px-6 md:px-10 pt-6 md:pt-8">
           {/* Logo */}
           <div className="anim-stagger" style={{ animationDelay: '0.1s' }}>
-            <VortxLogo />
+            <CordonLogo />
             <span className="text-white text-[10px] md:text-xs tracking-[0.4em] mt-1 block font-light">
               C O R D O N
             </span>
