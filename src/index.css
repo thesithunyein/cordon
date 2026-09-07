@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Inter', sans-serif;
+  background-color: #000000;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Octagonal clip-path buttons */
+.btn-cut {
+  clip-path: polygon(
+    12px 0%, calc(100% - 12px) 0%, 100% 12px, 100% calc(100% - 12px),
+    calc(100% - 12px) 100%, 12px 100%, 0% calc(100% - 12px), 0% 12px
+  );
+}
+
+.btn-cut-border {
+  position: relative;
+  background: white;
+  clip-path: polygon(
+    12px 0%, calc(100% - 12px) 0%, 100% 12px, 100% calc(100% - 12px),
+    calc(100% - 12px) 100%, 12px 100%, 0% calc(100% - 12px), 0% 12px
+  );
+}
+
+.btn-cut-border::before {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  background: black;
+  clip-path: polygon(
+    11px 0%, calc(100% - 11px) 0%, 100% 11px, 100% calc(100% - 11px),
+    calc(100% - 11px) 100%, 11px 100%, 0% calc(100% - 11px), 0% 11px
+  );
+  z-index: 0;
+}
+
+.btn-cut-border > * {
+  position: relative;
+  z-index: 1;
+}
+
+.btn-cut-sm {
+  clip-path: polygon(
+    8px 0%, calc(100% - 8px) 0%, 100% 8px, 100% calc(100% - 8px),
+    calc(100% - 8px) 100%, 8px 100%, 0% calc(100% - 8px), 0% 8px
+  );
+}
+
+/* Staggered entrance animations */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.anim-stagger {
+  opacity: 0;
+  animation: fadeUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.anim-fade {
+  opacity: 0;
+  animation: fadeIn 1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
