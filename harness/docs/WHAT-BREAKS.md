@@ -41,14 +41,16 @@ should stay under the faucet's drip rate, or the campaign should be spaced.
 ## Real refusals recorded during the evidence campaign
 
 The campaign hit three genuine failure conditions, all caught by the
-simulation gate with **zero gas spent** (65 refusals total, all in
+simulation gate with **zero gas spent** (90 refusals total, all in
 `receipts.json` with `refused: true`):
 
 | Condition | Revert reason | Count | What it means |
 |---|---|---|---|
 | Allowance exhausted | `ERC20: transfer amount exceeds allowance` | 10 | The Pool could not pull more LINK than the approved allowance; simulation refused before broadcast |
-| Balance exhausted | `ERC20: transfer amount exceeds balance` | 2 | The wallet ran out of LINK entirely; simulation refused before broadcast |
+| Balance exhausted | `ERC20: transfer amount exceeds balance` | 27 | The wallet ran out of LINK entirely; simulation refused before broadcast |
 | Capped reserve (USDC) | `Error(51)` — supply cap / insufficient balance | 50 | The shared deployment's USDC reserve cap is full (USDC was never mintable); the gate refused a doomed supply instead of broadcasting it |
+| Upstream rate limit | `429 Too Many Requests` | 1 | A public RPC rate-limited a read mid-cycle; the cycle logged the failure and the next round recovered |
+| Missing revert data | `Simulation reverted: missing revert data` | 2 | A simulation returned no decodeable revert reason; refused rather than broadcast |
 
 Recovery for both: run `npm run mint` (faucet) then `npm run approve` —
 each a real KeeperHub transaction itself — and the campaign continues.
