@@ -1,0 +1,145 @@
+{
+  "id": "q2bo3mi6xrhm5ws4fae2m",
+  "name": "cordon-aave-v3-guardian-0xf3f9aa",
+  "description": "Cordon: protect Aave V3 position 0xf3F9aAbe2aC0Fd841DFfE116867ab76D2b582897 on Sepolia. Reads health factor every 5 min; if it drops below 1.5, simulates and executes a 5 LINK top-up through KeeperHub and notifies. Deterministic, simulated, audited.",
+  "userId": "cbLhxWOXE9hPkey7k1OPchFNyRlgDD6H",
+  "organizationId": "2ba2ae6c-1ed2-4d98-8fa3-20e03d490ea7",
+  "isAnonymous": false,
+  "featured": false,
+  "featuredOrder": 0,
+  "featuredProtocol": null,
+  "featuredProtocolOrder": 0,
+  "projectId": null,
+  "tagId": null,
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "data": {
+        "type": "trigger",
+        "label": "Trigger",
+        "config": {
+          "triggerType": "Schedule",
+          "scheduleCron": "*/5 * * * *",
+          "scheduleTimezone": "UTC"
+        },
+        "status": "idle"
+      },
+      "type": "trigger",
+      "position": {
+        "x": 0,
+        "y": 116
+      }
+    },
+    {
+      "id": "step-1",
+      "data": {
+        "type": "action",
+        "label": "Get Aave Health Factor",
+        "config": {
+          "user": "0xf3F9aAbe2aC0Fd841DFfE116867ab76D2b582897",
+          "network": "11155111",
+          "actionType": "aave-v3/get-user-account-data",
+          "_protocolMeta": "{\"protocolSlug\":\"aave-v3\",\"contractKey\":\"pool\",\"functionName\":\"getUserAccountData\",\"actionType\":\"read\"}"
+        },
+        "status": "idle",
+        "description": "Read the position health factor from the Aave V3 Pool"
+      },
+      "type": "action",
+      "position": {
+        "x": 252,
+        "y": 116
+      }
+    },
+    {
+      "id": "step-2",
+      "data": {
+        "type": "action",
+        "label": "Condition",
+        "config": {
+          "group": {
+            "id": "group-1",
+            "logic": "AND",
+            "rules": [
+              {
+                "id": "rule-1",
+                "operator": "<",
+                "leftOperand": "{{@step-1:Get Aave Health Factor.healthFactor}}",
+                "rightOperand": "1500000000000000000"
+              }
+            ]
+          },
+          "condition": "{{@step-1:Get Aave Health Factor.healthFactor}} < 1500000000000000000",
+          "actionType": "Condition"
+        },
+        "status": "idle",
+        "description": "Is the position at risk of liquidation? (raw 1e18 health factor < threshold × 1e18)"
+      },
+      "type": "action",
+      "position": {
+        "x": 504,
+        "y": 116
+      }
+    },
+    {
+      "id": "step-3",
+      "data": {
+        "type": "action",
+        "label": "Supply LINK to protect position",
+        "config": {
+          "asset": "0xf8Fb3713D459D7C1018BD0A49D19b4C44290EBE5",
+          "amount": "5000000000000000000",
+          "network": "11155111",
+          "actionType": "aave-v3/supply",
+          "onBehalfOf": "0xf3F9aAbe2aC0Fd841DFfE116867ab76D2b582897",
+          "_protocolMeta": "{\"protocolSlug\":\"aave-v3\",\"contractKey\":\"pool\",\"functionName\":\"supply\",\"actionType\":\"write\"}"
+        },
+        "status": "idle",
+        "description": "Protective top-up: supply the reserve to the Aave Pool for the position"
+      },
+      "type": "action",
+      "position": {
+        "x": 756,
+        "y": 116
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-1",
+      "source": "trigger-1",
+      "target": "step-1"
+    },
+    {
+      "id": "e-2",
+      "source": "step-1",
+      "target": "step-2"
+    },
+    {
+      "id": "e-3",
+      "source": "step-2",
+      "target": "step-3",
+      "sourceHandle": "true"
+    }
+  ],
+  "visibility": "private",
+  "enabled": false,
+  "sourceWorkflowId": null,
+  "createdAt": "2026-09-08T15:28:50.562Z",
+  "updatedAt": "2026-09-08T15:28:50.562Z",
+  "seededAt": null,
+  "isListed": false,
+  "listedSlug": null,
+  "listedAt": null,
+  "shareExecutionStatus": false,
+  "inputSchema": null,
+  "outputMapping": null,
+  "priceUsdcPerCall": null,
+  "workflowType": "read",
+  "category": null,
+  "chain": null,
+  "listingVersion": 1,
+  "deletedAt": null,
+  "deactivatedAt": null,
+  "publicTags": [],
+  "isOwner": true
+}

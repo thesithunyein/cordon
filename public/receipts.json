@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-09-08T15:04:25.598Z",
-  "count": 740,
+  "generatedAt": "2026-09-08T15:15:21.254Z",
+  "count": 743,
   "receipts": [
     {
       "type": "campaign-execution",
@@ -11054,6 +11054,47 @@
       "executionId": "0zv1c03uzl54s5uhe1gox",
       "status": "completed",
       "error": null
+    },
+    {
+      "type": "drill",
+      "timestamp": "2026-09-08T15:15:17.000Z",
+      "position": "0xf3F9aAbe2aC0Fd841DFfE116867ab76D2b582897",
+      "healthFactorBefore": "1141048054147541483691",
+      "healthFactorAfter": "1141048054147541483691",
+      "decision": "stand-down",
+      "action": "stand-down",
+      "asset": "USDC",
+      "txHash": null,
+      "status": "ok"
+    },
+    {
+      "type": "drill",
+      "timestamp": "2026-09-08T15:15:19.290Z",
+      "position": "0xf3F9aAbe2aC0Fd841DFfE116867ab76D2b582897",
+      "healthFactorBefore": "1141048054147541483691",
+      "healthFactorAfter": null,
+      "decision": "protect",
+      "action": "top-up",
+      "asset": "USDC",
+      "amount": "1000000",
+      "refused": true,
+      "txHash": null,
+      "executionId": null,
+      "status": "failed",
+      "error": "Error(51)"
+    },
+    {
+      "type": "drill",
+      "timestamp": "2026-09-08T15:15:21.250Z",
+      "position": "0xf3F9aAbe2aC0Fd841DFfE116867ab76D2b582897",
+      "healthFactorBefore": "1141048054147541483691",
+      "healthFactorAfter": "1141048054147541483691",
+      "decision": "stand-down",
+      "action": "stand-down",
+      "asset": "USDC",
+      "txHash": null,
+      "status": "ok",
+      "error": "2 injected 429s absorbed by retry-with-backoff"
     }
   ]
 }

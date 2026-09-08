@@ -22,6 +22,8 @@ detect → decide → simulate → execute (idempotent) → verify → record
 ```bash
 cp .env.example .env    # fill KH_API_KEY, POSITION_ADDRESS, policy
 npm install
+npm run setup           # validates env + proves the live MCP → Aave read
+npm test                # unit + evidence-integrity tests
 ```
 
 ## Run
@@ -29,8 +31,11 @@ npm install
 ```bash
 npm run guard        # one full detect → protect → verify cycle
 npm run campaign     # CAMPAIGN_ROUNDS cycles, appends receipts each round
+npm run drill        # failure drills: stand-down, refusal, injected-429 retry
+npm run workflow:push  # push the guardian workflow (as code) to KeeperHub
 npm run typecheck    # TypeScript check
-node scripts/verify-receipts.mjs   # verify every hash against a public RPC
+npm run verify       # verify every hash against a public RPC
+npm run sync:site    # publish receipts.json to the live audit stream
 ```
 
 ## Files
@@ -41,9 +46,13 @@ node scripts/verify-receipts.mjs   # verify every hash against a public RPC
 | `src/guardian.ts` | the guardian core (detect / decide / protect / verify) |
 | `src/workflows/aave-v3-guardian.ts` | the same loop as a KeeperHub workflow (as code) |
 | `src/campaign.ts` | evidence runner |
+| `scripts/drill.ts` | failure-drill suite (see `docs/DRILLS.md`) |
+| `workflows/guardian.platform.json` | the pushed workflow, as it exists on KeeperHub |
 | `receipts/receipts.json` | the evidence — every tx hash, recomputable |
 | `docs/EVIDENCE.md` | how numbers were produced and verified |
 | `docs/WHAT-BREAKS.md` | honest failure cases |
+| `docs/DRILLS.md` | the failure drills, with live results |
+| `docs/WORKFLOW-AS-CODE.md` | workflow-as-code pushed + validated |
 
 ## Contract addresses
 

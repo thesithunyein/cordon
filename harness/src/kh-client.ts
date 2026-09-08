@@ -44,15 +44,63 @@ export class KeeperHubClient {
   private sessionId: string | null = null
   private initialized = false
 
+  /**
+   * Drills inject transient upstream failures (429 / 5xx / network drop) to
+   * prove the guardian recovers without human help. Retry is safe here:
+   * reads are idempotent and writes carry idempotency keys, so KeeperHub
+   * dedupes a replayed request. Bounded, with exponential backoff + jitter.
+   */
+  private maxRetries = 3
+  private baseDelayMs = 400
+
   constructor(apiKey: string, endpoint = 'https://app.keeperhub.com/mcp') {
     this.apiKey = apiKey
     this.endpoint = endpoint
+  }
+
+  /** Test hook: shrink the backoff so failure drills stay fast. */
+  setBackoff(maxRetries: number, baseDelayMs: number): void {
+    this.maxRetries = maxRetries
+    this.baseDelayMs = baseDelayMs
   }
 
   private async request(
     method: string,
     params: Record<string, unknown>,
     isNotification = false,
+  ): Promise<{ status: number; headers: Headers; text: string }> {
+    let lastErr: Error | null = null
+    let lastStatus = 0
+    let lastBody = ''
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      try {
+        const res = await this.rawRequest(method, params, isNotification)
+        // Only transient server-side failures are worth a retry. A 4xx other
+        // than 429 (auth, bad request, simulation revert) is deterministic:
+        // replaying it would fail identically, so surface it immediately.
+        const retriable = res.status === 429 || res.status >= 500
+        if (!retriable) return res
+        lastStatus = res.status
+        lastBody = res.text.slice(0, 300)
+      } catch (err) {
+        // Network drop / connection refused: transient by nature.
+        lastErr = err instanceof Error ? err : new Error(String(err))
+      }
+      if (attempt < this.maxRetries) {
+        const backoff = this.baseDelayMs * 2 ** attempt + Math.random() * 0.25 * this.baseDelayMs
+        await new Promise((r) => setTimeout(r, backoff))
+      }
+    }
+
+    if (lastErr) throw lastErr
+    return { status: lastStatus, headers: new Headers(), text: lastBody }
+  }
+
+  protected async rawRequest(
+    method: string,
+    params: Record<string, unknown>,
+    isNotification: boolean,
   ): Promise<{ status: number; headers: Headers; text: string }> {
     const headers = new Headers({
       'Content-Type': 'application/json',

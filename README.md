@@ -16,7 +16,7 @@
   <img alt="Network: Ethereum Sepolia" src="https://img.shields.io/badge/network-Sepolia-6b5b95.svg">
   <img alt="Status: live" src="https://img.shields.io/badge/status-live-success.svg">
   <img alt="Transactions" src="https://img.shields.io/badge/transactions-505%20verified-green.svg">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-50%20passing-brightgreen.svg">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-58%20passing-brightgreen.svg">
   <img alt="CI" src="https://github.com/thesithunyein/cordon/actions/workflows/ci.yml/badge.svg">
 </p>
 
@@ -132,6 +132,7 @@ CORDON (this repo)                                        │
   ├─ harness/src/guardian.ts    detect → decide → protect → verify
   ├─ harness/src/workflows/     the guardian workflow, as code
   ├─ harness/src/campaign.ts    the evidence campaign runner
+  ├─ harness/scripts/drill.ts   failure drills (stand-down, refusal, 429-retry)
   └─ harness/receipts/          every transaction hash, recomputable
 ```
 
@@ -223,10 +224,14 @@ cordon/
 │   │   └── mint-reserve.ts     # mint testnet assets from the Aave faucet
 │   ├── docs/
 │   │   ├── EVIDENCE.md         # how the numbers were produced and verified
-│   │   └── WHAT-BREAKS.md      # failure cases we hit, and what we did
-│   ├── .env.example            # KH_API_KEY, KH_ORG_ID, POSITION_ADDRESS
-│   └── package.json
+│   │   ├── WHAT-BREAKS.md      # failure cases we hit, and what we did
+│   │   ├── DRILLS.md           # the failure-drill suite (run npm run drill)
+│   │   └── WORKFLOW-AS-CODE.md # the guardian workflow, pushed + validated
+│   ├── workflows/
+│   │   └── guardian.platform.json  # the workflow as it exists on KeeperHub  │   ├── .env.example            # KH_API_KEY, POSITION_ADDRESS, guardian policy
+  │   └── package.json
 ├── .github/workflows/ci.yml    # typecheck + tests + receipts re-verification
+├── CONTRIBUTING.md            # how to pick the repo up
 ├── LICENSE
 ├── SECURITY.md
 └── CODE_OF_CONDUCT.md
@@ -243,31 +248,27 @@ cordon/
 - A `kh_` organization API key (Settings → Developer → API keys)
 - Sepolia ETH + testnet assets (faucets — see [SECURITY.md](SECURITY.md) for addresses)
 
-**Run it**
+**Run it — one command to prove everything works:**
 
 ```bash
 cd harness
-cp .env.example .env            # KH_API_KEY=kh_...  KH_ORG_ID=...  POSITION_ADDRESS=...
+cp .env.example .env            # KH_API_KEY=kh_...  POSITION_ADDRESS=0x...
 npm install
+npm run setup                   # validates env + proves the live MCP → Aave read
+npm test                        # unit + evidence-integrity tests (58)
+```
+
+Then the full toolkit:
+
+```bash
 npm run guard                   # one full detect → simulate → execute → verify cycle
 npm run campaign                # N cycles → receipts/receipts.json (append-only)
+npm run drill                   # failure drills: stand-down, refusal, 429-retry
+npm run workflow:push           # push the workflow-as-code definition to KeeperHub
 npm run mint                    # mint testnet assets from the Aave Sepolia faucet
 npm run approve                 # approve a reserve for the Aave Pool
 npm run verify                  # verify every receipt against a public RPC
 npm run sync:site               # publish receipts.json to the live audit stream
-npm test                        # unit + evidence-integrity tests (50)
-```
-
-**Example `.env`**
-
-```bash
-KH_API_KEY=kh_...
-KH_ORG_ID=your-org-id
-POSITION_ADDRESS=0x...          # the KeeperHub wallet holding the position
-NETWORK=sepolia
-HEALTH_FACTOR_THRESHOLD=1.5     # protect when health factor drops below this
-RESERVE=LINK                    # asset used for top-ups
-TOP_UP_AMOUNT=5                 # units per protective action
 ```
 
 ---
@@ -289,7 +290,8 @@ You configure it once. Cordon protects 24/7.
 
 | Surface | How |
 |---|---|
-| MCP server | `create_workflow`, `execute_workflow`, `get_execution` over `https://app.keeperhub.com/mcp` |
+| MCP server | `execute_protocol_action`, `create_workflow`, `execute_workflow`, `get_execution` over `https://app.keeperhub.com/mcp` |
+| Workflow-as-code | Guardian workflow built from `src/workflows/`, pushed + platform-validated (`valid: true`), snapshot in `harness/workflows/guardian.platform.json` — see [WORKFLOW-AS-CODE.md](harness/docs/WORKFLOW-AS-CODE.md) |
 | Protocol actions | `aave-v3/get-user-account-data`, `aave-v3/supply` — native Aave V3 plugin, live-validated on Sepolia |
 | Simulation | `simulate: true` preflight — gate on `success && !wouldRevert` before any broadcast |
 | Idempotency | unique `idempotency_key` per protective action; replays return the original execution |
@@ -335,10 +337,12 @@ A candid answer here has never hurt a submission; pretending testnet is mainnet 
 - [x] Live Aave V3 Sepolia integration through KeeperHub
 - [x] Detect → simulate → execute → verify loop, proven on-chain
 - [x] 505 executed receipts, all re-verified on-chain (CI-enforced)
-- [x] 50 unit + evidence-integrity tests, CI on every push
+- [x] 58 unit + evidence-integrity tests, CI on every push
+- [x] Failure-drill suite (stand-down, simulate-refusal, 429-retry) — see [DRILLS.md](harness/docs/DRILLS.md)
+- [x] Workflow-as-code pushed + validated on KeeperHub (`create_workflow` MCP surface)
 - [x] Live audit stream (receipts.json served + paginated on the site)
 - [ ] Multi-position watch list
-- [ ] Telegram / Discord alerts on success *and* failure
+- [ ] Telegram / Discord alerts on success *and* failure (chat-id config)
 - [ ] Per-position, per-asset thresholds
 - [ ] Mainnet pilot: real positions, real uptime
 - [ ] Upstream PR: KeeperHub bounty feature

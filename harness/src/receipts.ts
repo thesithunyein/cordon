@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 const RECEIPTS_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'receipts', 'receipts.json')
 
 export interface Receipt {
-  type: 'guard-cycle' | 'campaign-execution'
+  type: 'guard-cycle' | 'campaign-execution' | 'drill'
   timestamp: string
   position: string
   healthFactorBefore: string | null

@@ -86,9 +86,93 @@ test('callTool: 400 with wouldRevert surfaces as error with wouldRevert data', a
 test('callTool: plain 500 without wouldRevert is an error, not a refusal', async () => {
   calls = installFetchStub((req) => req.method === 'tools/call' ? { status: 500, text: 'server exploded' } : { status: 200, text: '{}' })
   const kh = new KeeperHubClient('kh_test')
+  kh.setBackoff(2, 5)
   const r = await kh.callTool('anything', {})
   assert.equal(r.isError, true)
   assert.equal(r.data?.wouldRevert, undefined)
+})
+
+test('retry: a transient 429 is retried with backoff and succeeds', async () => {
+  let n = 0
+  calls = installFetchStub((req) => {
+    if (req.method === 'tools/call') {
+      n++
+      if (n <= 2) return { status: 429, text: '{"error":"rate limited"}' }
+      return { status: 200, text: JSON.stringify({ jsonrpc: '2.0', result: { content: [{ type: 'text', text: '{"ok":true}' }] } }) }
+    }
+    return { status: 200, text: '{}' }
+  })
+  const kh = new KeeperHubClient('kh_test')
+  kh.setBackoff(3, 2)
+  const r = await kh.callTool('anything', {})
+  assert.equal(r.isError, false)
+  assert.equal(n, 3) // 2 failed attempts + 1 success
+})
+
+test('retry: a transient 500 is retried and succeeds', async () => {
+  let n = 0
+  calls = installFetchStub((req) => {
+    if (req.method === 'tools/call') {
+      n++
+      if (n === 1) return { status: 503, text: 'upstream warming up' }
+      return { status: 200, text: JSON.stringify({ jsonrpc: '2.0', result: { content: [{ type: 'text', text: '{"ok":true}' }] } }) }
+    }
+    return { status: 200, text: '{}' }
+  })
+  const kh = new KeeperHubClient('kh_test')
+  kh.setBackoff(3, 2)
+  const r = await kh.callTool('anything', {})
+  assert.equal(r.isError, false)
+  assert.equal(n, 2)
+})
+
+test('retry: a network drop is retried and succeeds', async () => {
+  let n = 0
+  calls = installFetchStub((req) => {
+    if (req.method === 'tools/call') {
+      n++
+      if (n === 1) throw new Error('fetch failed: connection refused')
+      return { status: 200, text: JSON.stringify({ jsonrpc: '2.0', result: { content: [{ type: 'text', text: '{"ok":true}' }] } }) }
+    }
+    return { status: 200, text: '{}' }
+  })
+  const kh = new KeeperHubClient('kh_test')
+  kh.setBackoff(3, 2)
+  const r = await kh.callTool('anything', {})
+  assert.equal(r.isError, false)
+  assert.equal(n, 2)
+})
+
+test('retry: an auth 401 is NOT retried (deterministic failure)', async () => {
+  let n = 0
+  calls = installFetchStub((req) => {
+    if (req.method === 'tools/call') {
+      n++
+      return { status: 401, text: 'unauthorized' }
+    }
+    return { status: 200, text: '{}' }
+  })
+  const kh = new KeeperHubClient('kh_test')
+  kh.setBackoff(3, 2)
+  const r = await kh.callTool('anything', {})
+  assert.equal(r.isError, true)
+  assert.equal(n, 1) // no retry on 401
+})
+
+test('retry: repeated 429s exhaust the budget and surface the error', async () => {
+  let n = 0
+  calls = installFetchStub((req) => {
+    if (req.method === 'tools/call') {
+      n++
+      return { status: 429, text: '{"error":"still rate limited"}' }
+    }
+    return { status: 200, text: '{}' }
+  })
+  const kh = new KeeperHubClient('kh_test')
+  kh.setBackoff(3, 2)
+  const r = await kh.callTool('anything', {})
+  assert.equal(r.isError, true)
+  assert.equal(n, 4) // 1 initial + 3 retries
 })
 
 test('callTool: jsonrpc error object marks isError', async () => {

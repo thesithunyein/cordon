@@ -11,7 +11,11 @@
     "approve": "tsx scripts/approve-reserve.ts",
     "mint": "tsx scripts/mint-reserve.ts",
     "test": "node --import tsx --test src/*.test.ts src/workflows/*.test.ts",
-    "sync:site": "node scripts/sync-public-evidence.mjs"
+    "sync:site": "node scripts/sync-public-evidence.mjs",
+    "drill": "tsx scripts/drill.ts",
+    "workflow:push": "tsx scripts/push-workflow.ts",
+    "setup": "tsx scripts/setup.ts",
+    "verify": "node scripts/verify-receipts.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
