@@ -40,14 +40,15 @@ should stay under the faucet's drip rate, or the campaign should be spaced.
 
 ## Real refusals recorded during the evidence campaign
 
-The campaign hit two genuine failure conditions, both caught by the
-simulation gate with **zero gas spent** (12 refusals total, all in
+The campaign hit three genuine failure conditions, all caught by the
+simulation gate with **zero gas spent** (65 refusals total, all in
 `receipts.json` with `refused: true`):
 
 | Condition | Revert reason | Count | What it means |
 |---|---|---|---|
 | Allowance exhausted | `ERC20: transfer amount exceeds allowance` | 10 | The Pool could not pull more LINK than the approved allowance; simulation refused before broadcast |
 | Balance exhausted | `ERC20: transfer amount exceeds balance` | 2 | The wallet ran out of LINK entirely; simulation refused before broadcast |
+| Capped reserve (USDC) | `Error(51)` — supply cap / insufficient balance | 50 | The shared deployment's USDC reserve cap is full (USDC was never mintable); the gate refused a doomed supply instead of broadcasting it |
 
 Recovery for both: run `npm run mint` (faucet) then `npm run approve` —
 each a real KeeperHub transaction itself — and the campaign continues.
@@ -63,6 +64,7 @@ allowances to avoid redundant approve transactions.
 
 ## Latency
 
-Event → broadcast latency through KeeperHub is not measured end to end in
-this build; a schedule trigger at 5-minute granularity dominates the delay
-anyway. Measuring it is tracked upstream in KeeperHub issue #2289.
+Event → broadcast latency through KeeperHub is now measured end to end by
+our upstream contribution: a correlation id minted at event observation and
+traced through SQS → executor → runner, with per-stage histograms
+([keeperhub/keeperhub#2361](https://github.com/KeeperHub/keeperhub/pull/2361)).
