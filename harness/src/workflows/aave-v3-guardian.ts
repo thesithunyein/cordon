@@ -125,7 +125,7 @@ export function buildGuardianWorkflow(config: CordonConfig): GuardianWorkflow {
           {
             id: 'rule-1',
             operator: '<',
-            leftOperand: `{{@step-1:Get Aave Health Factor.healthFactor}}`,
+            leftOperand: `{{@step-1:Get Aave Health Factor.result.healthFactor}}`,
             // 1e18 space: the read returns the health factor scaled by 1e18,
             // so compare against threshold × 1e18 (the platform's own Aave
             // monitor does exactly this). No code action required.
@@ -133,7 +133,7 @@ export function buildGuardianWorkflow(config: CordonConfig): GuardianWorkflow {
           },
         ],
       },
-      condition: `{{@step-1:Get Aave Health Factor.healthFactor}} < ${thresholdWei}`,
+      condition: `{{@step-1:Get Aave Health Factor.result.healthFactor}} < ${thresholdWei}`,
       actionType: 'Condition',
     },
     'Is the position at risk of liquidation? (raw 1e18 health factor < threshold × 1e18)',

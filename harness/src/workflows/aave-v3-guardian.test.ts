@@ -66,7 +66,7 @@ test('workflow: condition compares raw health factor in 1e18 space (no code acti
   assert.equal(cfg.actionType, 'Condition')
   // 1.5 threshold × 1e18, compared against the raw 1e18-scaled read — the
   // same shape as the platform's own Aave monitor (runs on the free plan)
-  assert.equal(cfg.condition, '{{@step-1:Get Aave Health Factor.healthFactor}} < 1500000000000000000')
+  assert.equal(cfg.condition, '{{@step-1:Get Aave Health Factor.result.healthFactor}} < 1500000000000000000')
   assert.ok((cfg.group as { rules: unknown[] }).rules.length >= 1)
 })
 
