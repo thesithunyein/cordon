@@ -1,13 +1,13 @@
 # Bounty submission — Best KeeperHub Feature (track 2, $500)
 
 The bounty deliverable is a **pull request to `keeperhub/keeperhub`**, separate
-from the main-track BUIDL.
+from the main-track BUIDL.## ✅ Status: PR OPEN
 
-## ✅ Status: PR OPEN
-
-**https://github.com/KeeperHub/keeperhub/pull/2360** — `feat(executor): end-to-end
-latency instrumentation with correlation ids`, based on `staging`, verified
+**https://github.com/KeeperHub/keeperhub/pull/2361** — `feat(executor): end-to-end latency instrumentation
+with correlation ids`, based on `staging`, verified
 MERGEABLE, 13 new tests, executor suite at 138 passing.
+All commits authored as Sithu Nyein <sithunyein.mailto@gmail.com>.
+(PR #2360 was superseded by #2361 after an attribution fix.)
 
 Everything needed is in this folder:
 
