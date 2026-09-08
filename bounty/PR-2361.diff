@@ -1,48 +1,169 @@
-From 54cd00fea58aca96fb01e53cac6f8b7c3e161d3c Mon Sep 17 00:00:00 2001
-From: Sithu Nyein <sithu@users.noreply.github.com>
-Date: Tue, 8 Sep 2026 17:29:05 +0630
-Subject: [PATCH] feat(executor): end-to-end latency instrumentation with
- correlation ids (#2289)
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
-
-Mint a correlation id at SQS receive and thread it through dispatch to the
-runner pod and the in-process engine, recording per-stage timestamps:
-
-  received -> started -> dispatched -> broadcast -> completed
-
-- latency.ts: ExecutionLatency stage tracker (idempotent marks, derived
-  durations, JSON-safe log fields) + CSPRNG correlation ids
-- processMessage/processExecutorMessage: correlation id minted at the
-  earliest receipt point; dispatch emission of the receive->dispatch
-  histogram and structured [Executor:Latency] summary line
-- executeInProcess: started/completed marks around the engine call,
-  receive->started + receive->completed histograms, correlation id on
-  existing completed/fatal logs
-- createWorkflowJob: KH_CORRELATION_ID env + pod label so runner logs
-  join the same trace key
-- metrics types: executor.dispatch.latency_ms / executor.execution.latency_ms
-  histograms + correlation_id / dispatch_target labels
-
-Tests: 13 new unit tests for id/order/idempotency/duration/serialization
-and the metric constants. Executor suite: 138 passing.
-
-Generated with Codebuff 🤖
-Co-Authored-By: Codebuff <noreply@codebuff.com>
----
- keeperhub-executor/in-process.ts   |  68 +++++++++++++-
- keeperhub-executor/index.ts        |  59 ++++++++++--
- keeperhub-executor/k8s-job.ts      |  12 ++-
- keeperhub-executor/latency.test.ts | 140 +++++++++++++++++++++++++++++
- keeperhub-executor/latency.ts      | 134 +++++++++++++++++++++++++++
- lib/metrics/types.ts               |  10 +++
- 6 files changed, 414 insertions(+), 9 deletions(-)
- create mode 100644 keeperhub-executor/latency.test.ts
- create mode 100644 keeperhub-executor/latency.ts
-
+diff --git a/keeperhub-events/event-tracker/lib/correlation.ts b/keeperhub-events/event-tracker/lib/correlation.ts
+new file mode 100644
+index 000000000..87e3e319e
+--- /dev/null
++++ b/keeperhub-events/event-tracker/lib/correlation.ts
+@@ -0,0 +1,13 @@
++import { randomBytes } from "node:crypto";
++
++/**
++ * End-to-end latency correlation (issue #2289).
++ *
++ * Minted at the moment an event is first observed, carried on the SQS message,
++ * and reused by the executor (which falls back to minting its own when the id
++ * is absent, e.g. legacy messages or non-event triggers). Same format as the
++ * executor's generateCorrelationId so a single run traces across both systems.
++ */
++export function generateCorrelationId(): string {
++  return randomBytes(8).toString("hex");
++}
+\ No newline at end of file
+diff --git a/keeperhub-events/event-tracker/lib/workflow-sqs.ts b/keeperhub-events/event-tracker/lib/workflow-sqs.ts
+index 33a1f84fa..2e79db09f 100644
+--- a/keeperhub-events/event-tracker/lib/workflow-sqs.ts
++++ b/keeperhub-events/event-tracker/lib/workflow-sqs.ts
+@@ -18,6 +18,14 @@ export interface WorkflowEventTrigger {
+   workflowId: string;
+   userId: string;
+   triggerData: unknown;
++  /**
++   * End-to-end latency correlation (issue #2289): minted at the moment the
++   * event is first observed, so the executor can join its receive/dispatch
++   * stages to the tracker's observation on one key and measure the queue leg.
++   */
++  correlationId?: string;
++  /** Epoch ms when the event was first observed by the tracker. */
++  observedAt?: number;
+ }
+ 
+ export async function enqueueWorkflowEventTrigger(
+@@ -32,6 +40,10 @@ export async function enqueueWorkflowEventTrigger(
+     userId: trigger.userId,
+     triggerType: "event" as const,
+     triggerData: trigger.triggerData,
++    // Latency correlation (issue #2289): absent for messages enqueued by
++    // older tracker versions, so the executor falls back to minting its own.
++    correlationId: trigger.correlationId,
++    observedAt: trigger.observedAt,
+   };
+   const body = JSON.stringify(payload);
+   await client.send(
+diff --git a/keeperhub-events/event-tracker/src/listener/event-listener.ts b/keeperhub-events/event-tracker/src/listener/event-listener.ts
+index 4a859286e..829676523 100644
+--- a/keeperhub-events/event-tracker/src/listener/event-listener.ts
++++ b/keeperhub-events/event-tracker/src/listener/event-listener.ts
+@@ -5,6 +5,7 @@ import {
+   createPhantomExecution,
+   failPhantomExecution,
+ } from "../../lib/phantom";
++import { generateCorrelationId } from "../../lib/correlation";
+ import { logger } from "../../lib/utils/logger";
+ import { enqueueWorkflowEventTrigger } from "../../lib/workflow-sqs";
+ import {
+@@ -237,6 +238,15 @@ export class EventListener {
+         return;
+       }
+ 
++      // Latency correlation (issue #2289): minted at the earliest point the
++      // event is observed, carried on the SQS message, and reused by the
++      // executor so tracker -> queue -> executor legs share one key.
++      const correlationId = generateCorrelationId();
++      const observedAt = Date.now();
++      logger.log(
++        `[EventListener:${this.opts.workflowId}] observed ${txHash} correlationId=${correlationId}`,
++      );
++
+       // Pace the dispatch. With a pacer (the production path, see registry)
+       // a lone event forwards immediately and a large batch drains at the
+       // per-chain rate. Without one, keep the legacy random jitter so the
+@@ -282,7 +292,7 @@ export class EventListener {
+       // across a reconnect replay, a reorg re-emit and a crash between the
+       // send and the mark below; the Redis dedup is best-effort and per tx.
+       const dispatchKey = `event:${this.opts.workflowId}:${this.opts.chainId}:${txHash}:${log.index}`;
+-      await this.sendToSqs(payload, dispatchKey);
++      await this.sendToSqs(payload, dispatchKey, correlationId, observedAt);
+ 
+       // Mark after the send, and after a refusal too: a refused event is
+       // settled, and leaving it unmarked only buys another admission
+@@ -307,6 +317,8 @@ export class EventListener {
+   private async sendToSqs(
+     payload: unknown,
+     dispatchKey: string,
++    correlationId?: string,
++    observedAt?: number,
+   ): Promise<void> {
+     // KEEP-693: pre-create a phantom row (best-effort) so the run is visible
+     // even if it never reaches the executor, and carry its id so the executor
+@@ -344,6 +356,8 @@ export class EventListener {
+         workflowId: this.opts.workflowId,
+         userId: this.opts.userId,
+         triggerData: payload,
++        correlationId,
++        observedAt,
+       });
+     } catch (err) {
+       if (executionId) {
+diff --git a/keeperhub-events/event-tracker/tests/unit/workflow-sqs.test.ts b/keeperhub-events/event-tracker/tests/unit/workflow-sqs.test.ts
+new file mode 100644
+index 000000000..6c3a0f01e
+--- /dev/null
++++ b/keeperhub-events/event-tracker/tests/unit/workflow-sqs.test.ts
+@@ -0,0 +1,52 @@
++import { SendMessageCommand } from "@aws-sdk/client-sqs";
++import { describe, expect, it, vi } from "vitest";
++import { enqueueWorkflowEventTrigger } from "../../lib/workflow-sqs";
++
++function fakeClient() {
++  const send = vi.fn().mockResolvedValue({});
++  const client = { send } as unknown as ConstructorParameters<
++    typeof enqueueWorkflowEventTrigger
++  >[0];
++  return { send, client };
++}
++
++function captureBody(send: ReturnType<typeof vi.fn>): unknown {
++  const command = send.mock.calls[0][0] as SendMessageCommand;
++  const input = command.input as { MessageBody: string };
++  return JSON.parse(input.MessageBody);
++}
++
++describe("enqueueWorkflowEventTrigger", () => {
++  it("carries correlationId and observedAt when provided", async () => {
++    const { send, client } = fakeClient();
++    await enqueueWorkflowEventTrigger(client, "https://queue", {
++      executionId: "exec-1",
++      workflowId: "wf-1",
++      userId: "u-1",
++      triggerData: { eventName: "Transfer" },
++      correlationId: "abcd1234efgh5678",
++      observedAt: 123456789,
++    });
++
++    const body = captureBody(send) as Record<string, unknown>;
++    expect(body.workflowId).toBe("wf-1");
++    expect(body.triggerType).toBe("event");
++    expect(body.correlationId).toBe("abcd1234efgh5678");
++    expect(body.observedAt).toBe(123456789);
++  });
++
++  it("omits the correlation fields for legacy calls (undefined is dropped)", async () => {
++    const { send, client } = fakeClient();
++    await enqueueWorkflowEventTrigger(client, "https://queue", {
++      executionId: "exec-1",
++      workflowId: "wf-1",
++      userId: "u-1",
++      triggerData: { eventName: "Transfer" },
++    });
++
++    const body = captureBody(send) as Record<string, unknown>;
++    expect(body.correlationId).toBeUndefined();
++    expect(body.observedAt).toBeUndefined();
++    expect(Object.keys(body)).not.toContain("correlationId");
++  });
++});
+\ No newline at end of file
 diff --git a/keeperhub-executor/in-process.ts b/keeperhub-executor/in-process.ts
-index d3ee04b..4bbe9b8 100644
+index d3ee04bff..4bbe9b8a2 100644
 --- a/keeperhub-executor/in-process.ts
 +++ b/keeperhub-executor/in-process.ts
 @@ -1,10 +1,13 @@
@@ -164,7 +285,7 @@ index d3ee04b..4bbe9b8 100644
 +  );
 +}
 diff --git a/keeperhub-executor/index.ts b/keeperhub-executor/index.ts
-index 56da206..e7ee801 100644
+index 56da206ec..f30662256 100644
 --- a/keeperhub-executor/index.ts
 +++ b/keeperhub-executor/index.ts
 @@ -77,6 +77,7 @@ import {
@@ -283,21 +404,28 @@ index 56da206..e7ee801 100644
  ): Promise<void> {
    if (!(message.Body && message.ReceiptHandle)) {
      console.error("[Executor] Invalid message:", message);
-@@ -824,6 +866,13 @@ export async function processMessage(
+@@ -824,6 +866,20 @@ export async function processMessage(
      return;
    }
  
-+  // Latency instrumentation (issue #2289): the correlation id is minted at the
-+  // earliest point the message is seen and travels with the execution through
-+  // dispatch, the runner (KH_CORRELATION_ID) and the in-process engine, so a
-+  // single run is traceable across every stage.
-+  const latency = new ExecutionLatency();
++  // Latency instrumentation (issue #2289): reuse the correlation id minted by
++  // the event-tracker at observation time when the message carries one (event
++  // triggers), so tracker -> queue -> executor legs share one key; otherwise
++  // mint it at the earliest point the message is seen here. It travels with
++  // the execution through dispatch, the runner (KH_CORRELATION_ID) and the
++  // in-process engine, so a single run is traceable across every stage.
++  const latency = new ExecutionLatency(
++    body.triggerType === "event" ? body.correlationId : undefined
++  );
++  if (body.triggerType === "event" && body.observedAt !== undefined) {
++    latency.mark("observed", body.observedAt);
++  }
 +  latency.mark("received");
 +
    // Authenticate + validate the message before it can drive a
    // fund-moving execution. In "warn" mode we record metrics but still process
    // (so shipping this ahead of every producer signing cannot cause an outage);
-@@ -867,7 +916,7 @@ export async function processMessage(
+@@ -867,7 +923,7 @@ export async function processMessage(
    }
  
    try {
@@ -307,7 +435,7 @@ index 56da206..e7ee801 100644
      await sqs.send(
        new DeleteMessageCommand({
 diff --git a/keeperhub-executor/k8s-job.ts b/keeperhub-executor/k8s-job.ts
-index a008884..cba6b22 100644
+index a00888461..cba6b227d 100644
 --- a/keeperhub-executor/k8s-job.ts
 +++ b/keeperhub-executor/k8s-job.ts
 @@ -99,8 +99,11 @@ export async function createWorkflowJob(params: {
@@ -346,15 +474,16 @@ index a008884..cba6b22 100644
    if (scheduleId) {
 diff --git a/keeperhub-executor/latency.test.ts b/keeperhub-executor/latency.test.ts
 new file mode 100644
-index 0000000..9835dd7
+index 000000000..f794e3f50
 --- /dev/null
 +++ b/keeperhub-executor/latency.test.ts
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,215 @@
 +import { describe, expect, it } from "vitest";
 +import {
 +  ExecutionLatency,
 +  generateCorrelationId,
 +} from "./latency";
++import { executorMessageSchema } from "./message-schema";
 +import { LabelKeys, MetricNames } from "../lib/metrics/types";
 +
 +describe("generateCorrelationId", () => {
@@ -475,6 +604,45 @@ index 0000000..9835dd7
 +    expect(fields.startedAt).toBeUndefined();
 +    expect(fields.totalMs).toBe(100);
 +  });
++
++  it("tracks the tracker-observed stage and derives the queue leg", () => {
++    const latency = new ExecutionLatency("tracker-minted-id");
++    // The tracker mints the id and stamps observedAt; the executor reuses the
++    // id (issue #2289) and marks observed from the message field.
++    latency.mark("observed", 1_000);
++    latency.mark("received", 1_500);
++    latency.mark("started", 1_700);
++    latency.mark("completed", 2_500);
++
++    expect(latency.stageMs("observed", "received")).toBe(500); // queue leg
++    expect(latency.stageMs("received", "started")).toBe(200); // pre-engine
++    // totalMs is the executor lifetime (received -> completed); the full
++    // tracker-to-terminal pipeline is observed -> completed.
++    expect(latency.totalMs()).toBe(1_000);
++    expect(latency.stageMs("observed", "completed")).toBe(1_500);
++
++    const fields = latency.toLogFields();
++    expect(fields.correlationId).toBe("tracker-minted-id");
++    expect(fields.observedAt).toBe(new Date(1_000).toISOString());
++  });
++
++  it("emits observed in the summary line before received", () => {
++    const latency = new ExecutionLatency("corr-obs");
++    latency.mark("observed", 0);
++    latency.mark("received", 100);
++    latency.mark("started", 200);
++    latency.mark("completed", 300);
++    const line = latency.summaryLine({
++      workflowId: "wf-1",
++      executionId: "exec-1",
++      triggerType: "event",
++      dispatchTarget: "in-process",
++    });
++    expect(line.indexOf("observedAt=")).toBeLessThan(
++      line.indexOf("receivedAt=")
++    );
++    expect(line).toContain("correlationId=corr-obs");
++  });
 +});
 +
 +// Drift guards: the wiring in index.ts / in-process.ts references these exact
@@ -490,13 +658,48 @@ index 0000000..9835dd7
 +    expect(LabelKeys.DISPATCH_TARGET).toBe("dispatch_target");
 +  });
 +});
++
++describe("event message schema with latency correlation", () => {
++  it("accepts an event message carrying correlationId + observedAt", () => {
++    const parsed = executorMessageSchema.safeParse({
++      triggerType: "event",
++      workflowId: "wf-1",
++      userId: "u-1",
++      triggerData: { eventName: "Transfer" },
++      correlationId: "abcd1234efgh5678",
++      observedAt: 123456789,
++    });
++    expect(parsed.success).toBe(true);
++  });
++
++  it("accepts legacy event messages without the correlation fields", () => {
++    const parsed = executorMessageSchema.safeParse({
++      triggerType: "event",
++      workflowId: "wf-1",
++      userId: "u-1",
++      triggerData: { eventName: "Transfer" },
++    });
++    expect(parsed.success).toBe(true);
++  });
++
++  it("rejects a malformed observedAt (guards the producer contract)", () => {
++    const parsed = executorMessageSchema.safeParse({
++      triggerType: "event",
++      workflowId: "wf-1",
++      userId: "u-1",
++      triggerData: {},
++      observedAt: "not-a-number",
++    });
++    expect(parsed.success).toBe(false);
++  });
++});
 \ No newline at end of file
 diff --git a/keeperhub-executor/latency.ts b/keeperhub-executor/latency.ts
 new file mode 100644
-index 0000000..9b6b039
+index 000000000..f9fbf3c83
 --- /dev/null
 +++ b/keeperhub-executor/latency.ts
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,139 @@
 +import { randomBytes } from "node:crypto";
 +
 +/**
@@ -505,6 +708,9 @@ index 0000000..9b6b039
 + * Every trigger message that reaches the executor gets a correlation id and a
 + * set of stage timestamps as it moves through the pipeline:
 + *
++ *   observed   - the triggering event was first seen by the event-tracker
++ *                 (epoch ms carried on the SQS message; absent for legacy
++ *                 messages and non-event triggers)
 + *   received   - SQS message arrived at the executor (processMessage)
 + *   started    - workflow engine actually began running the workflow
 + *   dispatched - dispatch handed the execution to its target
@@ -522,6 +728,7 @@ index 0000000..9b6b039
 + */
 +
 +export type LatencyStage =
++  | "observed"
 +  | "received"
 +  | "started"
 +  | "dispatched"
@@ -531,6 +738,7 @@ index 0000000..9b6b039
 +// Canonical order for the emitted JSON. Stages may be skipped (e.g. an
 +// in-process run never broadcasts); ordering only applies to what is marked.
 +const STAGE_ORDER: readonly LatencyStage[] = [
++  "observed",
 +  "received",
 +  "started",
 +  "dispatched",
@@ -632,8 +840,79 @@ index 0000000..9b6b039
 +  }
 +}
 \ No newline at end of file
+diff --git a/keeperhub-executor/message-schema.ts b/keeperhub-executor/message-schema.ts
+index 094557023..1493e3710 100644
+--- a/keeperhub-executor/message-schema.ts
++++ b/keeperhub-executor/message-schema.ts
+@@ -49,6 +49,10 @@ const eventMessageSchema = z.object({
+   // passes decoded event data through verbatim; keep this permissive so a
+   // non-object payload never fails an already-authenticated message.
+   triggerData: z.unknown(),
++  // Latency correlation (issue #2289): optional so messages enqueued by
++  // older trackers (without the fields) still validate and dispatch.
++  correlationId: z.string().optional(),
++  observedAt: z.number().optional(),
+ });
+ 
+ // manual and webhook share a shape but are separate literal branches so the
+diff --git a/keeperhub-executor/types.ts b/keeperhub-executor/types.ts
+index 12d413d55..e2d5d54f9 100644
+--- a/keeperhub-executor/types.ts
++++ b/keeperhub-executor/types.ts
+@@ -41,6 +41,12 @@ export type EventMessage = {
+     args?: Record<string, unknown>;
+     [key: string]: unknown;
+   };
++  // Latency correlation (issue #2289): minted by the event-tracker at
++  // observation time and reused by the executor so the tracker -> queue ->
++  // executor legs share one key. Absent for messages enqueued by older
++  // trackers, in which case the executor mints its own.
++  correlationId?: string;
++  observedAt?: number;
+ };
+ 
+ export type ManualMessage = {
+diff --git a/keeperhub-executor/workflow-runner.ts b/keeperhub-executor/workflow-runner.ts
+index ce60ffdde..b745c6e11 100644
+--- a/keeperhub-executor/workflow-runner.ts
++++ b/keeperhub-executor/workflow-runner.ts
+@@ -199,7 +199,15 @@ async function main(): Promise<void> {
+   currentExecutionId = executionId;
+   currentScheduleId = scheduleId ?? null;
+ 
+-  console.log("[Runner] Starting workflow execution");
++  // Latency correlation (issue #2289): injected by the executor as
++  // KH_CORRELATION_ID on the Job (see k8s-job.ts), joining this pod's logs to
++  // the executor's receive/dispatch stages on one key.
++  const correlationId = process.env.KH_CORRELATION_ID ?? "";
++  const correlationSuffix = correlationId
++    ? ` correlationId=${correlationId}`
++    : "";
++
++  console.log("[Runner] Starting workflow execution" + correlationSuffix);
+   console.log(`[Runner] Workflow ID: ${workflowId}`);
+   console.log(`[Runner] Execution ID: ${executionId}`);
+   console.log(`[Runner] Schedule ID: ${scheduleId || "none"}`);
+@@ -276,7 +284,7 @@ async function main(): Promise<void> {
+     );
+ 
+     const duration = Date.now() - startTime;
+-    console.log(`[Runner] Workflow completed in ${duration}ms`);
++    console.log(`[Runner] Workflow completed in ${duration}ms${correlationSuffix}`);
+     console.log(`[Runner] Success: ${result.success}`);
+ 
+     // executeWorkflow is the authoritative writer of the terminal status (with
+@@ -298,7 +306,7 @@ async function main(): Promise<void> {
+     const errorMessage =
+       error instanceof Error ? error.message : "Unknown error";
+ 
+-    console.error(`[Runner] Fatal error after ${duration}ms:`, errorMessage);
++    console.error(`[Runner] Fatal error after ${duration}ms${correlationSuffix}:`, errorMessage);
+ 
+     let dbUpdateSucceeded = false;
+     try {
 diff --git a/lib/metrics/types.ts b/lib/metrics/types.ts
-index 5726e4a..d61ef46 100644
+index 5726e4a32..d61ef46b9 100644
 --- a/lib/metrics/types.ts
 +++ b/lib/metrics/types.ts
 @@ -108,6 +108,12 @@ export const MetricNames = {
@@ -660,6 +939,3 @@ index 5726e4a..d61ef46 100644
  } as const;
  
  /**
--- 
-2.51.0.windows.2
-
