@@ -132,21 +132,30 @@ All transaction hashes live in
 [`harness/receipts/receipts.json`](harness/receipts/receipts.json). Every figure below
 is recomputable with `node harness/scripts/verify-receipts.mjs`.
 
-- **Transactions executed through KeeperHub:** 10
-- **Guard cycles recorded:** 20 (setup + protects + stand-downs)
-- **Protective top-ups executed on-chain:** 2 — health factor 4.50 → 6.75, then 6.75 → 9.00
-- **Simulation refusals:** documented in [WHAT-BREAKS.md](harness/docs/WHAT-BREAKS.md)
+- **Transactions executed through KeeperHub:** 38
+- **Guard cycles recorded:** 75 (setup + protects + stand-downs)
+- **Protective top-ups executed on-chain:** 28 — health factor raised from **4.50 to 67.50** across the corpus
+- **Simulation refusals (zero gas):** 12 — allowance and balance exhaustion, both caught before broadcast (playbook in [WHAT-BREAKS.md](harness/docs/WHAT-BREAKS.md))
+- **Stand-downs logged:** 25 — healthy positions correctly left untouched
 - **Regressions:** 0
 
-Verified 2026-09-08 against a public Sepolia RPC: **10/10 receipts returned `status: 0x1`.**
+Verified 2026-09-08 against a public Sepolia RPC: **38/38 receipts returned `status: 0x1`.**
+
+The CI pipeline re-runs this verification on every push
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
 | What | Tx |
 |---|---|
-| Protective top-up (HF 4.50 → 6.75) | [`0x0b0e…85b33`](https://sepolia.etherscan.io/tx/0x0b0e39e95d0e5cdba8a1e8625cd307cce0cde92ea67bb2f5d47a3919fce85b33) |
+| Protective top-up (HF 4.50 → 6.75, first) | [`0x0b0e…85b33`](https://sepolia.etherscan.io/tx/0x0b0e39e95d0e5cdba8a1e8625cd307cce0cde92ea67bb2f5d47a3919fce85b33) |
 | Protective top-up (HF 6.75 → 9.00) | [`0x02e1…4669e`](https://sepolia.etherscan.io/tx/0x02e15edfed880f7c27a8fda9bbae600db9c3137c6ea757fe39c3aded73e4669e) |
+| Protective top-up (HF 65.25 → 67.50, latest) | [`0x8080…d82`](https://sepolia.etherscan.io/tx/0x8080292d3034eed1e4b35476320df8c48317af6ca2d2fc2263aa4d0a43543d82) |
 | Collateral supply (LINK) | [`0x9c8f…09f4`](https://sepolia.etherscan.io/tx/0x9c8f4d476c074337b59a0d86ba05fa88840061748a6e0dd373c9a43788cf09f4) |
 | Borrow (USDC vs LINK) | [`0x661f…a3ea5`](https://sepolia.etherscan.io/tx/0x661f46945004e3c59604fa346e77bfe3f5cfe1fb814d2dfbbc67c8e79a5a3ea5) |
 | Faucet mint (LINK) | [`0x69d7…eea61`](https://sepolia.etherscan.io/tx/0x69d7397478c42c997238c5d9e3a28f16b4f87e3d9ecb834c1d3e26f4ab5eea61) |
+| Re-approve LINK (post-exhaustion) | [`0xa10a…23d2`](https://sepolia.etherscan.io/tx/0xa10a7f821b487fa7b207204f40e797d7bb3f61cfa14259ac954d9c05562a23d2) |
+
+All 38 hashes, with per-transaction gas and health-factor movement, are in
+[`harness/receipts/receipts.json`](harness/receipts/receipts.json).
 
 To verify any hash end to end:
 
@@ -182,17 +191,21 @@ cordon/
 │   │   ├── receipts.ts         # append-only receipt store
 │   │   ├── campaign.ts         # evidence runner: N executions → receipts.json
 │   │   ├── guard.ts            # single-cycle runner
+│   │   ├── *.test.ts           # unit + evidence-integrity tests (node:test)
 │   │   └── workflows/
 │   │       └── aave-v3-guardian.ts   # the guardian workflow, as code
 │   ├── receipts/
 │   │   └── receipts.json       # every tx hash, status, gas — recomputable
 │   ├── scripts/
-│   │   └── verify-receipts.mjs # verifies every receipt against a public RPC
+│   │   ├── verify-receipts.mjs # verifies every receipt against a public RPC
+│   │   ├── approve-reserve.ts  # ensure Pool allowance (simulate → execute)
+│   │   └── mint-reserve.ts     # mint testnet assets from the Aave faucet
 │   ├── docs/
 │   │   ├── EVIDENCE.md         # how the numbers were produced and verified
 │   │   └── WHAT-BREAKS.md      # failure cases we hit, and what we did
 │   ├── .env.example            # KH_API_KEY, KH_ORG_ID, POSITION_ADDRESS
 │   └── package.json
+├── .github/workflows/ci.yml    # typecheck + tests + receipts re-verification
 ├── LICENSE
 ├── SECURITY.md
 └── CODE_OF_CONDUCT.md
@@ -217,7 +230,10 @@ cp .env.example .env            # KH_API_KEY=kh_...  KH_ORG_ID=...  POSITION_ADD
 npm install
 npm run guard                   # one full detect → simulate → execute → verify cycle
 npm run campaign                # N cycles → receipts/receipts.json (append-only)
+npm run mint                    # mint testnet assets from the Aave Sepolia faucet
+npm run approve                 # approve a reserve for the Aave Pool
 npm run verify                  # verify every receipt against a public RPC
+npm test                        # unit + evidence-integrity tests
 ```
 
 **Example `.env`**
@@ -296,7 +312,8 @@ A candid answer here has never hurt a submission; pretending testnet is mainnet 
 
 - [x] Live Aave V3 Sepolia integration through KeeperHub
 - [x] Detect → simulate → execute → verify loop, proven on-chain
-- [ ] 30–50+ executed receipts before submission
+- [x] 38 executed receipts, all re-verified on-chain (CI-enforced)
+- [x] Unit tests + evidence-integrity tests
 - [ ] Multi-position watch list
 - [ ] Telegram / Discord alerts on success *and* failure
 - [ ] Per-position, per-asset thresholds

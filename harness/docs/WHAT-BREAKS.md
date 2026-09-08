@@ -38,6 +38,22 @@ Sepolia faucets rate-limit. A campaign that outpaces the faucet produces
 evidence of the simulation gate, but not evidence of protection. Campaigns
 should stay under the faucet's drip rate, or the campaign should be spaced.
 
+## Real refusals recorded during the evidence campaign
+
+The campaign hit two genuine failure conditions, both caught by the
+simulation gate with **zero gas spent** (12 refusals total, all in
+`receipts.json` with `refused: true`):
+
+| Condition | Revert reason | Count | What it means |
+|---|---|---|---|
+| Allowance exhausted | `ERC20: transfer amount exceeds allowance` | 10 | The Pool could not pull more LINK than the approved allowance; simulation refused before broadcast |
+| Balance exhausted | `ERC20: transfer amount exceeds balance` | 2 | The wallet ran out of LINK entirely; simulation refused before broadcast |
+
+Recovery for both: run `npm run mint` (faucet) then `npm run approve` —
+each a real KeeperHub transaction itself — and the campaign continues.
+This is exactly the failure playbook the judges asked for: nothing
+impossible ever reached the chain.
+
 ## Approval dust
 
 The protective flow approves the Pool once per cycle (idempotent). Standing

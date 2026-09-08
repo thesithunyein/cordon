@@ -53,11 +53,14 @@ export class Guardian {
     const totalDebtBase = String(result?.totalDebtBase ?? '0')
 
     const hf = Number(healthFactor) / 1e18
+    // Exact comparison: Number() loses precision at 18 decimals, so compare
+    // the raw 1e18-scaled value against the threshold in wei via BigInt.
+    const thresholdWei = BigInt(Math.round(this.config.healthFactorThreshold * 1e18))
     return {
       healthFactor,
       totalCollateralBase,
       totalDebtBase,
-      atRisk: hf < this.config.healthFactorThreshold,
+      atRisk: BigInt(healthFactor) < thresholdWei,
     }
   }
 

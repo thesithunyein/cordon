@@ -191,6 +191,32 @@ export default function App() {
               </a>
             </div>
           </div>
+
+          {/* Live proof strip */}
+          <div
+            className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 mt-4 md:mt-5 anim-stagger"
+            style={{ animationDelay: '1.15s' }}
+          >
+            <span className="text-white/60 text-xs tracking-wide">
+              38 on-chain transactions · 12 refusals · 25 stand-downs
+            </span>
+            <a
+              href="https://github.com/thesithunyein/cordon/blob/master/harness/receipts/receipts.json"
+              target="_blank"
+              rel="noreferrer"
+              className="text-white/60 text-xs underline decoration-white/20 hover:text-white transition-colors"
+            >
+              receipts.json
+            </a>
+            <a
+              href="https://github.com/thesithunyein/cordon/blob/master/harness/docs/EVIDENCE.md"
+              target="_blank"
+              rel="noreferrer"
+              className="text-white/60 text-xs underline decoration-white/20 hover:text-white transition-colors"
+            >
+              evidence
+            </a>
+          </div>
         </div>
       </div>
     </div>

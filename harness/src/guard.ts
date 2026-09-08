@@ -39,6 +39,7 @@ async function main() {
       healthFactorBefore: snapshot.healthFactor,
       healthFactorAfter: snapshot.healthFactor,
       decision: 'stand-down',
+      action: 'stand-down',
       txHash: null,
       status: 'ok',
     })

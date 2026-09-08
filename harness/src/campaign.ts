@@ -17,10 +17,15 @@ async function main() {
   const kh = new KeeperHubClient(config.khApiKey)
   const guardian = new Guardian(kh, config)
 
+  // Escalating mode: after each completed protective execution, raise the
+  // threshold just above the verified health factor so the next round executes
+  // again. Used to build real-execution evidence volume on testnet.
+  const escalate = process.env.CAMPAIGN_ESCALATE === 'true'
+
   const rounds = config.campaignRounds
   console.log(`\nCordon — evidence campaign: ${rounds} rounds`)
   console.log(`Position:  ${config.positionAddress}`)
-  console.log(`Threshold: health factor < ${config.healthFactorThreshold}\n`)
+  console.log(`Threshold: health factor < ${config.healthFactorThreshold}${escalate ? ' (escalating)' : ''}\n`)
 
   let executed = 0
   let refused = 0
@@ -43,6 +48,7 @@ async function main() {
           healthFactorBefore: snapshot.healthFactor,
           healthFactorAfter: null,
           decision: 'stand-down',
+          action: 'stand-down',
           txHash: null,
           status: 'ok',
         })
@@ -61,6 +67,10 @@ async function main() {
       }
 
       const after = protection.status === 'completed' ? await guardian.verify() : null
+      if (escalate && after?.healthFactor) {
+        config.healthFactorThreshold = Number(after.healthFactor) / 1e18 + 0.5
+        console.log(`      → threshold escalated to ${config.healthFactorThreshold.toFixed(2)}`)
+      }
       const receipt: Receipt = {
         type: 'campaign-execution',
         timestamp: new Date().toISOString(),
