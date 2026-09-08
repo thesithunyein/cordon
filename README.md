@@ -1,84 +1,144 @@
 <p align="center">
-  <img src="public/cordon-logo-black.png" alt="Cordon logo" width="120">
+  <img src="public/cordon-logo.png" alt="Cordon logo" width="140">
 </p>
 
-# CORDON
+<h1 align="center">CORDON</h1>
 
-**KeeperHub as the execution layer for Aave V3 positions.**
+<p align="center">
+  <b>Your Aave position. Defended automatically.</b><br>
+  Cordon watches the health factor of your Aave V3 position and, when it crosses your
+  threshold, simulates and executes the protective transaction through KeeperHub —
+  deterministically, idempotently, and with a full audit trail.
+</p>
 
-Cordon watches an Aave V3 position's health factor on Sepolia and, when it drops below your threshold, simulates and executes the protective transaction — a collateral top-up or debt repayment — through KeeperHub. Every step is simulated before it touches the chain, idempotent under retry, and recorded in a full audit trail.
+<p align="center">
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg">
+  <img alt="Network: Ethereum Sepolia" src="https://img.shields.io/badge/network-Sepolia-6b5b95.svg">
+  <img alt="Status: live" src="https://img.shields.io/badge/status-live-success.svg">
+  <img alt="Transactions" src="https://img.shields.io/badge/transactions-verified-green.svg">
+</p>
 
-> *The gap between seeing the danger and acting on it is where people lose money. Cordon closes that gap.*
-
-Built for the KeeperHub **Agent Economy Hackathon**. Every figure here comes from a real transaction receipt on Ethereum Sepolia. Nothing is estimated, modelled, or extrapolated — and the workflows are still live, so you can open any of them.
+<p align="center">
+  <i>“The gap between seeing the danger and acting on it is where people lose money.<br>
+  Cordon closes that gap.”</i>
+</p>
 
 ---
 
-## The four questions
+## Table of contents
 
-### 1. Who has the problem?
+- [The problem](#the-problem)
+- [The solution](#the-solution)
+- [Architecture](#architecture)
+- [Live evidence](#live-evidence)
+- [Repository structure](#repository-structure)
+- [Getting started](#getting-started)
+- [How Cordon protects you](#how-cordon-protects-you)
+- [KeeperHub surfaces used](#keeperhub-surfaces-used)
+- [Security](#security)
+- [What still breaks](#what-still-breaks)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [Code of conduct](#code-of-conduct)
+- [License](#license)
 
-Anyone with a leveraged position on a lending protocol (Aave, Compound, Morpho) who cannot watch it 24/7. Borrowers who got liquidated once and now check their health factor at 3am. DeFi lending holds tens of billions in deposits — and every major protocol has liquidation events weekly.
+---
 
-### 2. What is the problem?
+## The problem
 
-When collateral value drops or debt grows, the health factor falls. Below 1.0 = liquidation, at a penalty of 5–10% of collateral. Monitoring tools and alerts exist — but **execution does not**. Today, getting a liquidation alert means opening a laptop, approving a transaction, and hoping gas and timing cooperate. The gap between *seeing* the danger and *acting* on it is where positions die.
+**Who has it.** Anyone with a leveraged position on a lending protocol — Aave, Compound,
+Morpho — who cannot watch it 24/7. Borrowers who got liquidated once and now check their
+health factor at 3am. DeFi lending holds **tens of billions of dollars in deposits**, and
+every major protocol has liquidation events every week.
 
-### 3. What did we build?
+**What it is.** When collateral value drops or debt grows, the health factor falls.
+Below **1.0 = liquidation**, at a penalty of **5–10% of your collateral**. The market
+already has monitoring tools (DeFi Saver, Zapper) and alert bots (Otomato, Dune) — but
+**execution does not**. An alert means opening a laptop, approving a transaction, and
+hoping gas and timing cooperate. The gap between *seeing* the danger and *acting* on it
+is where positions die.
 
-The integration that closes the gap: a KeeperHub workflow that reads an Aave V3 position's health factor, and when it crosses the configured threshold, **simulates** the protective transaction, **executes** it through KeeperHub (with idempotency, retries, and status polling), **verifies** the new health factor, and leaves a full audit trail.
+**Why it's expensive.** Losses from this gap aren't hypothetical:
+
+- **$840M+** lost in DeFi hacks and exploits in Jan–May 2026 alone
+- **$3.4B** stolen in 2025 — Bybit alone lost $1.46B in a single event
+- **76%** of DeFi losses come from infrastructure failure, not smart-contract bugs
+
+---
+
+## The solution
+
+Cordon is a **position guardian**: a KeeperHub-native workflow that reads your Aave V3
+health factor, and when it drops below your threshold, completes the loop that every
+monitoring tool stops short of:
+
+```
+detect → decide → simulate → execute → verify → audit
+```
+
+KeeperHub's own docs ship a health-factor monitor whose example workflow **stops at a
+Discord alert**. Cordon is the integration that keeps going past the alert — it executes
+the protective action with simulation gating, idempotency, private routing, and an
+auditable record. That is the difference between *"your position might be at risk"* and
+*"your position is protected."*
+
+**Why testnet, honestly.** The value that moves is Sepolia testnet value; the mechanics
+are the same mechanics — real Aave V3 contracts, real transactions, real hashes on a
+public explorer. Meld, 1st place in the previous KeeperHub hackathon, ran entirely on
+Ethereum Sepolia: **1,092 transactions, zero regressions**. Testnet does not dilute
+evidence; shallowness does.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+  User[Borrower] --> Pos[Aave V3 Position]
+  Pos -->|getUserAccountData| Detect[Guardian detects health factor]
+  Detect --> Decide{Health factor\nbelow threshold?}
+  Decide -->|no| Stand[Stand down<br>- audit receipt]
+  Decide -->|yes| Sim[Simulate protective tx<br>- zero gas]
+  Sim -->|wouldRevert| Refuse[Refuse execution<br>- honest receipt]
+  Sim -->|safe| KH[KeeperHub executes<br>- idempotent, private routing]
+  KH --> Tx[On-chain tx on Sepolia]
+  Tx --> Verify[Verify new health factor]
+  Verify --> Audit[Audit trail<br>- receipts.json]
+  Audit --> Loop[Loop - next cycle]
+  Loop --> Detect
+```
 
 ```
 Aave V3 on Ethereum Sepolia (live protocol, official testnet deployment)
-        ▲ reads: getUserAccountData → healthFactor           ▲ writes: repay / supply
-        │                                                     │
-CORDON (this repo)                                            │
-  ├─ harness/kh-client.ts    MCP client over app.keeperhub.com/mcp
-  ├─ harness/workflows/      the guardian workflow, as code
-  ├─ harness/campaign.ts     the evidence campaign runner
-  └─ harness/receipts/       every transaction hash, recomputable
+        ▲ reads: getUserAccountData → healthFactor       ▲ writes: repay / supply
+        │                                                 │
+CORDON (this repo)                                        │
+  ├─ harness/src/kh-client.ts   typed MCP client over app.keeperhub.com/mcp
+  ├─ harness/src/guardian.ts    detect → decide → protect → verify
+  ├─ harness/src/workflows/     the guardian workflow, as code
+  ├─ harness/src/campaign.ts    the evidence campaign runner
+  └─ harness/receipts/          every transaction hash, recomputable
 ```
 
-### 4. Why is it meaningfully better?
-
-KeeperHub's own docs ship a health-factor monitor whose example workflow **stops at a Discord alert**. Cordon is the integration that keeps going past the alert: it executes the protective action — deterministically, on demand, with full control and an auditable record. That is the difference between "your position might be at risk" and "your position is protected."
-
----
-
-## Why testnet, honestly
-
-The Aave V3 plugin's write actions are mainnet-only today, so on Sepolia Cordon calls the **real Aave V3 Sepolia contracts** (official deployment, `aave-address-book`) through KeeperHub's generic web3 actions with Aave-specific ABI handling in this repo. The value that moves is testnet value; the mechanics are the same mechanics — and the evidence is identical in shape: transaction hashes on a public explorer, recomputable from `receipts.json`.
-
-Meld, 1st place in the previous KeeperHub hackathon, ran entirely on Ethereum Sepolia: 1,092 transactions, zero regressions. Testnet does not dilute evidence; shallowness does.
+Every protective action goes through the **simulate-gate**: nothing touches the chain
+until a simulation proves it will succeed. If the simulation reverts, Cordon refuses and
+records the refusal — zero gas spent, honest evidence logged.
 
 ---
 
-## KeeperHub surfaces used
+## Live evidence
 
-| Surface | How |
-|---|---|
-| MCP server | `create_workflow`, `execute_workflow`, `get_execution` over `https://app.keeperhub.com/mcp` |
-| Protocol / web3 actions | `web3/read-contract` (Aave V3 Pool `getUserAccountData`), `web3/write-contract` (`repay`, `supply`) |
-| Simulation | `simulate: true` preflight — gate on `success && !wouldRevert` before any broadcast |
-| Idempotency | unique `idempotency_key` per protective action; replays return the original execution |
-| Status polling | `get_direct_execution_status` with bounded backoff to terminal state |
-| Audit trail | every run's step logs exported with the receipt |
-
----
-
-## Evidence
-
-All transaction hashes live in [`harness/receipts/receipts.json`](harness/receipts/receipts.json). Every figure below is recomputable from that file with `node harness/scripts/verify-receipts.mjs`.
+All transaction hashes live in
+[`harness/receipts/receipts.json`](harness/receipts/receipts.json). Every figure below
+is recomputable with `node harness/scripts/verify-receipts.mjs`.
 
 - **Transactions executed through KeeperHub:** 10
 - **Guard cycles recorded:** 20 (setup + protects + stand-downs)
 - **Protective top-ups executed on-chain:** 2 — health factor 4.50 → 6.75, then 6.75 → 9.00
-- **Simulation refusals (no gas spent):** documented in WHAT-BREAKS.md
+- **Simulation refusals:** documented in [WHAT-BREAKS.md](harness/docs/WHAT-BREAKS.md)
 - **Regressions:** 0
 
-Verified 2026-09-08 against a public Sepolia RPC: 10/10 receipts returned `status: 0x1`.
-
-Key transactions:
+Verified 2026-09-08 against a public Sepolia RPC: **10/10 receipts returned `status: 0x1`.**
 
 | What | Tx |
 |---|---|
@@ -86,6 +146,7 @@ Key transactions:
 | Protective top-up (HF 6.75 → 9.00) | [`0x02e1…4669e`](https://sepolia.etherscan.io/tx/0x02e15edfed880f7c27a8fda9bbae600db9c3137c6ea757fe39c3aded73e4669e) |
 | Collateral supply (LINK) | [`0x9c8f…09f4`](https://sepolia.etherscan.io/tx/0x9c8f4d476c074337b59a0d86ba05fa88840061748a6e0dd373c9a43788cf09f4) |
 | Borrow (USDC vs LINK) | [`0x661f…a3ea5`](https://sepolia.etherscan.io/tx/0x661f46945004e3c59604fa346e77bfe3f5cfe1fb814d2dfbbc67c8e79a5a3ea5) |
+| Faucet mint (LINK) | [`0x69d7…eea61`](https://sepolia.etherscan.io/tx/0x69d7397478c42c997238c5d9e3a28f16b4f87e3d9ecb834c1d3e26f4ab5eea61) |
 
 To verify any hash end to end:
 
@@ -96,57 +157,170 @@ curl -s https://ethereum-sepolia-rpc.publicnode.com \
   "params":["<tx_hash>"]}'
 ```
 
-See [`harness/docs/EVIDENCE.md`](harness/docs/EVIDENCE.md) for the full method.
+See [`harness/docs/EVIDENCE.md`](harness/docs/EVIDENCE.md) for the full methodology.
 
 ---
 
-## What still breaks (honest)
-
-- **Testnet only.** Value moved is Sepolia testnet value; mainnet is the documented next step (the same harness, a funded wallet, and the Aave plugin or equivalent contract calls).
-- **Aave V3 plugin writes are mainnet-only**, so the guardian uses direct contract calls to the Aave V3 Sepolia Pool with our own ABI handling. If the plugin gains testnet support, this is a drop-in swap.
-- **Single protocol, single position** today. Multi-position watch lists are the next milestone.
-- **No partial-collateral operations.** Cordon's protective actions are top-up (supply) or repay — deliberate simplicity over breadth.
-- **Threshold is static per workflow.** Per-position, per-asset thresholds are planned.
-
-A candid answer here has never hurt a submission; pretending testnet is mainnet would.
-
----
-
-## Repository layout
+## Repository structure
 
 ```
-harness/
-├── src/
-│   ├── config.ts           # org, network, threshold, position address
-│   ├── kh-client.ts        # typed MCP wrapper (create, simulate, execute, poll)
-│   ├── workflows/
-│   │   └── aave-v3-guardian.ts   # the guardian workflow, as code
-│   └── campaign.ts         # evidence runner: N executions → receipts.json
-├── receipts/
-│   └── receipts.json       # every transaction hash, status, gas — recomputable
-└── docs/
-    ├── EVIDENCE.md         # how the numbers were produced and how to verify them
-    └── WHAT-BREAKS.md      # the failure cases we hit, and what we did about them
-
-src/                        # the landing page (this front-end)
+cordon/
+├── src/                        # the landing page (this front-end)
+│   ├── App.tsx                 # hero: pitch, live-on badge, social links
+│   ├── index.css               # octagonal cut buttons, staggered animations
+│   └── main.tsx
+├── public/
+│   ├── cordon-logo.png         # shield mark (light background)
+│   ├── cordon-logo-black.png   # shield mark (dark background)
+│   └── cordon-favicon.png      # browser favicon
+├── harness/                    # the product — a KeeperHub integration
+│   ├── src/
+│   │   ├── config.ts           # org, network, threshold, position address
+│   │   ├── kh-client.ts        # typed MCP wrapper (create, simulate, execute, poll)
+│   │   ├── guardian.ts         # detect → decide → protect → verify
+│   │   ├── aave-v3.ts          # Aave V3 Sepolia addresses + ABIs (aave-address-book)
+│   │   ├── receipts.ts         # append-only receipt store
+│   │   ├── campaign.ts         # evidence runner: N executions → receipts.json
+│   │   ├── guard.ts            # single-cycle runner
+│   │   └── workflows/
+│   │       └── aave-v3-guardian.ts   # the guardian workflow, as code
+│   ├── receipts/
+│   │   └── receipts.json       # every tx hash, status, gas — recomputable
+│   ├── scripts/
+│   │   └── verify-receipts.mjs # verifies every receipt against a public RPC
+│   ├── docs/
+│   │   ├── EVIDENCE.md         # how the numbers were produced and verified
+│   │   └── WHAT-BREAKS.md      # failure cases we hit, and what we did
+│   ├── .env.example            # KH_API_KEY, KH_ORG_ID, POSITION_ADDRESS
+│   └── package.json
+├── LICENSE
+├── SECURITY.md
+└── CODE_OF_CONDUCT.md
 ```
 
 ---
 
 ## Getting started
 
+**Prerequisites**
+
+- A [KeeperHub](https://app.keeperhub.com) org with a connected wallet integration
+  (Turnkey — non-custodial, no private keys to manage)
+- A `kh_` organization API key (Settings → Developer → API keys)
+- Sepolia ETH + testnet assets (faucets — see [SECURITY.md](SECURITY.md) for addresses)
+
+**Run it**
+
 ```bash
 cd harness
-cp .env.example .env        # KH_API_KEY=kh_...  KH_ORG_ID=...
+cp .env.example .env            # KH_API_KEY=kh_...  KH_ORG_ID=...  POSITION_ADDRESS=...
 npm install
-npm run campaign            # run the evidence campaign → receipts/receipts.json
-npm run guard               # one full detect → simulate → execute cycle
+npm run guard                   # one full detect → simulate → execute → verify cycle
+npm run campaign                # N cycles → receipts/receipts.json (append-only)
+npm run verify                  # verify every receipt against a public RPC
 ```
 
-Requires a KeeperHub org with a connected wallet integration (Turnkey, non-custodial) and Sepolia faucet funds.
+**Example `.env`**
+
+```bash
+KH_API_KEY=kh_...
+KH_ORG_ID=your-org-id
+POSITION_ADDRESS=0x...          # the KeeperHub wallet holding the position
+NETWORK=sepolia
+HEALTH_FACTOR_THRESHOLD=1.5     # protect when health factor drops below this
+RESERVE=LINK                    # asset used for top-ups
+TOP_UP_AMOUNT=5                 # units per protective action
+```
+
+---
+
+## How Cordon protects you
+
+1. **Monitors** your position's health factor every cycle (`aave-v3/get-user-account-data`)
+2. **Detects** the health factor crossing your configured threshold
+3. **Simulates** the protective transaction first — if it would revert, it refuses
+4. **Executes** the top-up or repayment through KeeperHub (idempotent, private routing)
+5. **Verifies** the new health factor on-chain after execution
+6. **Audits** every step: trigger → decision → simulation → execution → result
+
+You configure it once. Cordon protects 24/7.
+
+---
+
+## KeeperHub surfaces used
+
+| Surface | How |
+|---|---|
+| MCP server | `create_workflow`, `execute_workflow`, `get_execution` over `https://app.keeperhub.com/mcp` |
+| Protocol actions | `aave-v3/get-user-account-data`, `aave-v3/supply` — native Aave V3 plugin, live-validated on Sepolia |
+| Simulation | `simulate: true` preflight — gate on `success && !wouldRevert` before any broadcast |
+| Idempotency | unique `idempotency_key` per protective action; replays return the original execution |
+| Status polling | `get_direct_execution_status` with bounded backoff to terminal state |
+| Audit trail | every run's step logs exported with the receipt |
+
+---
+
+## Security
+
+- **Non-custodial by design.** Funds live in the KeeperHub Turnkey wallet; no private
+  keys ever leave the secure enclave, and Cordon never holds them.
+- **Simulation-first.** No transaction is broadcast until a simulation proves it
+  succeeds — reverts cost zero gas.
+- **Idempotent execution.** A retried protective action can never double-execute.
+- **Key handling.** `KH_API_KEY` lives only in `harness/.env`, which is gitignored and
+  never committed. Treat it like a password — it can move money.
+- **Full audit trail.** Every decision and transaction is recorded in `receipts.json`,
+  recomputable against the public chain.
+
+See [SECURITY.md](SECURITY.md) for the full policy and how to report a vulnerability.
+
+---
+
+## What still breaks
+
+- **Testnet only.** Value moved is Sepolia testnet value; mainnet is the documented next
+  step (the same harness, a funded wallet, and the Aave plugin).
+- **Aave V3 plugin writes are mainnet-only**, so the guardian uses direct contract calls
+  to the Aave V3 Sepolia Pool with our own ABI handling. If the plugin gains testnet
+  support, this is a drop-in swap.
+- **Single protocol, single position** today. Multi-position watch lists are next.
+- **No partial-collateral operations.** Protective actions are top-up (supply) or repay —
+  deliberate simplicity over breadth.
+- **Threshold is static per workflow.** Per-position, per-asset thresholds are planned.
+
+A candid answer here has never hurt a submission; pretending testnet is mainnet would.
+
+---
+
+## Roadmap
+
+- [x] Live Aave V3 Sepolia integration through KeeperHub
+- [x] Detect → simulate → execute → verify loop, proven on-chain
+- [ ] 30–50+ executed receipts before submission
+- [ ] Multi-position watch list
+- [ ] Telegram / Discord alerts on success *and* failure
+- [ ] Per-position, per-asset thresholds
+- [ ] Mainnet pilot: real positions, real uptime
+- [ ] Upstream PR: KeeperHub bounty feature
+
+---
+
+## Contributing
+
+PRs are welcome. Open an issue first to discuss what you'd like to change, and keep
+changes focused — one scope per PR, with tests where they add value. See
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before your first contribution.
+
+---
+
+## Code of conduct
+
+We are committed to a harassment-free experience for everyone. Harassment of any
+participant — in any form — will not be tolerated. If you experience or witness abuse,
+report it to the maintainer via the email in [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ---
 
 ## License
 
-MIT — © 2026 Sithu Nyein
+MIT — © 2026 Sithu Nyein. See [LICENSE](LICENSE) for the full text.

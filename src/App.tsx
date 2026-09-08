@@ -36,8 +36,8 @@ function DiscordIcon() {
 
 export default function App() {
   return (
-    <div className="h-screen w-full bg-black p-3 md:p-4 font-inter">
-      <div className="w-full h-full rounded-2xl flex flex-col overflow-hidden relative bg-black">
+    <div className="min-h-screen w-full bg-black p-3 md:p-4 font-inter">
+      <div className="w-full min-h-screen rounded-2xl flex flex-col overflow-hidden relative bg-black">
         {/* Background Video */}
         <video
           src="https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260717_120352_eb988725-1351-43b3-8095-16e4a1005e3d.mp4"
@@ -50,7 +50,7 @@ export default function App() {
         />
 
         {/* Navbar */}
-        <nav className="relative z-10 flex items-center justify-between px-6 md:px-10 pt-6 md:pt-8">
+        <nav className="relative z-10 flex items-center justify-between px-6 md:px-10 pt-4 md:pt-5">
           {/* Logo */}
           <div className="anim-stagger" style={{ animationDelay: '0.1s' }}>
             <CordonLogo />
@@ -84,12 +84,12 @@ export default function App() {
         </nav>
 
         {/* Main Content */}
-        <div className="relative z-10 flex-1 flex flex-col justify-between px-6 md:px-10 pb-8 md:pb-10">
+        <div className="relative z-10 flex-1 flex flex-col justify-between px-6 md:px-10 pb-6 md:pb-8">
           {/* Top Section */}
           <div className="flex-1 flex items-center relative">
             {/* Left Column (hidden below lg) */}
             <div
-              className="hidden lg:flex flex-col gap-6 absolute left-0 top-[18%] anim-stagger"
+              className="hidden lg:flex flex-col gap-6 absolute left-0 top-[6%] anim-stagger"
               style={{ animationDelay: '0.4s' }}
             >
               <p className="text-white/80 text-base leading-relaxed max-w-[240px]">
@@ -117,7 +117,7 @@ export default function App() {
               style={{ animationDelay: '0.5s' }}
             >
               <h1
-                className="text-white text-3xl sm:text-4xl md:text-5xl lg:text-6xl xl:text-7xl font-normal leading-[1.1] tracking-[-0.04em]"
+                className="text-white text-3xl sm:text-4xl md:text-5xl lg:text-5xl xl:text-6xl font-normal leading-[1.1] tracking-[-0.04em]"
                 style={{ textShadow: '0 2px 12px rgba(0,0,0,0.25)' }}
               >
                 Your Aave position<br />
@@ -128,7 +128,7 @@ export default function App() {
           </div>
 
           {/* Bottom Row */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center mt-8">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center mt-4">
             {/* Col 1 */}
             <div
               className="flex items-center justify-center md:justify-end anim-stagger"
@@ -143,7 +143,7 @@ export default function App() {
 
             {/* Col 2 */}
             <div
-              className="flex flex-col items-center gap-8 md:gap-24 anim-stagger"
+              className="flex flex-col items-center gap-6 md:gap-10 anim-stagger"
               style={{ animationDelay: '0.85s' }}
             >
               <span className="text-white text-2xl md:text-3xl font-medium">
