@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="public/cordon-logo.png" alt="Cordon logo" width="120">
+  <img src="public/cordon-logo-black.png" alt="Cordon logo" width="120">
 </p>
 
 # C O R D O N
