@@ -29,5 +29,7 @@ Thumbs.db
 
 # Local env files
 *.local
+.env
+harness/.env
 
 .vercel

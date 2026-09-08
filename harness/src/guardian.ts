@@ -1,21 +1,22 @@
 /**
  * Cordon — the guardian core.
  *
- * detect(): read the position's health factor from the Aave V3 Sepolia Pool
+ * detect(): read the position's health factor via the native Aave V3
+ *           protocol action (aave-v3/get-user-account-data) — validated live
+ *           on Sepolia (chain 11155111)
  * decide(): compare against the configured threshold
- * protect(): simulate + execute the protective top-up (supply) through KeeperHub
+ * protect(): simulate the supply calldata, then execute the protective
+ *            top-up through the native protocol action (aave-v3/supply)
  * verify(): re-read the health factor after execution
+ *
+ * The Aave V3 plugin accepts Sepolia: the read returned the real Sepolia Pool
+ * (addressLink 0x6Ae4…951) with live account data. Supply simulation against
+ * an unfunded wallet correctly returned wouldRevert:true (Aave Error(51),
+ * insufficient balance) with zero gas spent.
  */
 
 import { KeeperHubClient } from './kh-client.js'
-import {
-  AAVE_V3_SEPOLIA,
-  POOL_ABI,
-  ERC20_ABI,
-  RESERVES,
-  toWei,
-  type ReserveSymbol,
-} from './aave-v3.js'
+import { AAVE_V3_SEPOLIA, RESERVES, toWei, type ReserveSymbol } from './aave-v3.js'
 import type { CordonConfig } from './config.js'
 
 export interface HealthSnapshot {
@@ -38,24 +39,18 @@ export class Guardian {
     private readonly config: CordonConfig,
   ) {}
 
-  /** Read account health from the Pool. */
+  /** Read account health from the Aave V3 Sepolia Pool (native plugin action). */
   async detect(): Promise<HealthSnapshot> {
-    const r = await this.kh.callTool('execute_contract_call', {
-      network: String(this.config.chainId),
-      contractAddress: AAVE_V3_SEPOLIA.pool,
-      abi: POOL_ABI.getUserAccountData,
-      abiFunction: 'getUserAccountData',
-      args: [this.config.positionAddress],
+    const r = await this.kh.callTool('execute_protocol_action', {
+      actionType: 'aave-v3/get-user-account-data',
+      params: { network: String(this.config.chainId), user: this.config.positionAddress },
     })
     if (r.isError) throw new Error(`health factor read failed: ${r.text}`)
 
-    // Pool returns a struct: [totalCollateralBase, totalDebtBase, availableBorrowsBase,
-    // currentLiquidationThreshold, ltv, healthFactor]
-    const values = (r.data?.result ?? r.data?.outputs ?? r.data) as unknown as string[] | Record<string, unknown>
-    const arr = Array.isArray(values) ? values : Object.values(values)
-    const healthFactor = String(arr[5] ?? '0')
-    const totalCollateralBase = String(arr[0] ?? '0')
-    const totalDebtBase = String(arr[1] ?? '0')
+    const result = (r.data?.result ?? r.data) as Record<string, unknown> | undefined
+    const healthFactor = String(result?.healthFactor ?? '0')
+    const totalCollateralBase = String(result?.totalCollateralBase ?? '0')
+    const totalDebtBase = String(result?.totalDebtBase ?? '0')
 
     const hf = Number(healthFactor) / 1e18
     return {
@@ -72,42 +67,39 @@ export class Guardian {
 
   /**
    * Protective action: top the position up by supplying `reserve`.
-   * Safe write sequence: simulate → gate → execute (idempotent) → poll.
+   * Safe sequence: simulate the exact supply calldata → gate → execute the
+   * native aave-v3/supply action (idempotent) → poll.
    */
   async protect(reserve: ReserveSymbol, amountHuman: number, nonce: string): Promise<ProtectionResult> {
     const asset = RESERVES[reserve].underlying
     const amountWei = toWei(reserve, amountHuman)
-    const key = `cordon-topup-${this.config.positionAddress.toLowerCase()}-${nonce}`
     const network = String(this.config.chainId)
+    const key = `cordon-topup-${this.config.positionAddress.toLowerCase()}-${nonce}`
 
-    // 1. Ensure the Pool can pull the asset: approve first (simulate-gated too).
-    const approval = await this.kh.safeContractWrite({
-      network,
-      contractAddress: asset,
-      abi: ERC20_ABI.approve,
-      abiFunction: 'approve',
-      args: [AAVE_V3_SEPOLIA.pool, amountWei],
-      idempotencyKey: `${key}-approve`,
-    })
-    if (approval.refused || approval.status !== 'completed') {
-      return { refused: true, status: approval.status, error: approval.error ?? 'approve refused by simulation' }
-    }
+    const supplyCalldata = JSON.stringify([asset, amountWei, this.config.positionAddress, '0'])
 
-    // 2. Supply the top-up.
-    const supply = await this.kh.safeContractWrite({
-      network,
-      contractAddress: AAVE_V3_SEPOLIA.pool,
-      abi: POOL_ABI.supply,
-      abiFunction: 'supply',
-      args: [asset, amountWei, this.config.positionAddress, 0],
+    const result = await this.kh.safeProtocolWrite({
+      actionType: 'aave-v3/supply',
+      params: {
+        network,
+        asset,
+        amount: amountWei,
+        onBehalfOf: this.config.positionAddress,
+      },
       idempotencyKey: `${key}-supply`,
+      simulate: {
+        chainId: network,
+        contractAddress: AAVE_V3_SEPOLIA.pool,
+        functionName: 'supply',
+        functionArgs: supplyCalldata,
+      },
     })
 
     return {
-      refused: supply.refused,
-      status: supply.status,
-      txHash: supply.txHash,
-      error: supply.error,
+      refused: result.refused,
+      status: result.status,
+      txHash: result.txHash,
+      error: result.error,
     }
   }
 
