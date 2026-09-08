@@ -68,12 +68,24 @@ Meld, 1st place in the previous KeeperHub hackathon, ran entirely on Ethereum Se
 
 ## Evidence
 
-All transaction hashes live in [`harness/receipts/receipts.json`](harness/receipts/receipts.json). The headline numbers, all recomputable from that file:
+All transaction hashes live in [`harness/receipts/receipts.json`](harness/receipts/receipts.json). Every figure below is recomputable from that file with `node harness/scripts/verify-receipts.mjs`.
 
-- **Executions:** _populated by the campaign_
-- **Transactions:** _populated by the campaign_
-- **Simulation refusals (no gas spent):** _populated by the campaign_
+- **Transactions executed through KeeperHub:** 10
+- **Guard cycles recorded:** 20 (setup + protects + stand-downs)
+- **Protective top-ups executed on-chain:** 2 — health factor 4.50 → 6.75, then 6.75 → 9.00
+- **Simulation refusals (no gas spent):** documented in WHAT-BREAKS.md
 - **Regressions:** 0
+
+Verified 2026-09-08 against a public Sepolia RPC: 10/10 receipts returned `status: 0x1`.
+
+Key transactions:
+
+| What | Tx |
+|---|---|
+| Protective top-up (HF 4.50 → 6.75) | [`0x0b0e…85b33`](https://sepolia.etherscan.io/tx/0x0b0e39e95d0e5cdba8a1e8625cd307cce0cde92ea67bb2f5d47a3919fce85b33) |
+| Protective top-up (HF 6.75 → 9.00) | [`0x02e1…4669e`](https://sepolia.etherscan.io/tx/0x02e15edfed880f7c27a8fda9bbae600db9c3137c6ea757fe39c3aded73e4669e) |
+| Collateral supply (LINK) | [`0x9c8f…09f4`](https://sepolia.etherscan.io/tx/0x9c8f4d476c074337b59a0d86ba05fa88840061748a6e0dd373c9a43788cf09f4) |
+| Borrow (USDC vs LINK) | [`0x661f…a3ea5`](https://sepolia.etherscan.io/tx/0x661f46945004e3c59604fa346e77bfe3f5cfe1fb814d2dfbbc67c8e79a5a3ea5) |
 
 To verify any hash end to end:
 
