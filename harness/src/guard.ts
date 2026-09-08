@@ -71,6 +71,7 @@ async function main() {
     amount: String(config.topUpAmount),
     refused: protection.refused,
     txHash: protection.txHash ?? null,
+    executionId: protection.executionId ?? null,
     status: protection.status,
     error: protection.error ?? null,
   }

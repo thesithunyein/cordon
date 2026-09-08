@@ -24,6 +24,8 @@ export interface Receipt {
   amount?: string
   refused?: boolean
   txHash: string | null
+  /** Org-scoped KeeperHub execution id, when the write went through. */
+  executionId?: string | null
   status: string
   error?: string | null
 }

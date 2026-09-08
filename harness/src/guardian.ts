@@ -30,6 +30,8 @@ export interface ProtectionResult {
   refused: boolean
   status: string
   txHash?: string
+  /** Org-scoped KeeperHub execution id — the team can look this up directly. */
+  executionId?: string
   error?: string
 }
 
@@ -102,6 +104,7 @@ export class Guardian {
       refused: result.refused,
       status: result.status,
       txHash: result.txHash,
+      executionId: result.executionId,
       error: result.error,
     }
   }

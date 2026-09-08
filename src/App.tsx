@@ -1,4 +1,5 @@
-import { ArrowRight } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { ArrowRight, ArrowLeft } from 'lucide-react'
 
 function CordonLogo() {
   return (
@@ -34,7 +35,284 @@ function DiscordIcon() {
   )
 }
 
-export default function App() {
+type Receipt = {
+  type?: string
+  timestamp?: string
+  position?: string
+  healthFactorBefore?: string | number | null
+  healthFactorAfter?: string | number | null
+  decision?: string
+  action?: string
+  asset?: string
+  amount?: string | number
+  refused?: boolean
+  txHash?: string | null
+  status?: string
+  error?: string | null
+  executionId?: string
+}
+
+const PAGE_SIZE = 25
+
+function shortHash(h: string, n = 10) {
+  if (!h) return '—'
+  return `${h.slice(0, n)}…${h.slice(-4)}`
+}
+
+function AuditPage() {
+  const [receipts, setReceipts] = useState<Receipt[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+  const [filter, setFilter] = useState<'all' | 'executed' | 'refused' | 'stand-down'>('all')
+
+  useEffect(() => {
+    fetch('/receipts.json')
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json()
+      })
+      .then((data) => {
+        const arr = Array.isArray(data) ? data : data.receipts ?? []
+        setReceipts(arr as Receipt[])
+      })
+      .catch((e) => setError(String(e.message ?? e)))
+  }, [])
+
+  const stats = useMemo(() => {
+    if (!receipts) return null
+    const executed = receipts.filter(
+      (x) => x.status === 'completed' && !x.refused && x.txHash
+    ).length
+    const refused = receipts.filter((x) => x.refused === true).length
+    const standDown = receipts.filter(
+      (x) => x.action === 'stand-down' || x.decision === 'stand_down'
+    ).length
+    return { total: receipts.length, executed, refused, standDown }
+  }, [receipts])
+
+  const filtered = useMemo(() => {
+    if (!receipts) return []
+    switch (filter) {
+      case 'executed':
+        return receipts.filter(
+          (x) => x.status === 'completed' && !x.refused && x.txHash
+        )
+      case 'refused':
+        return receipts.filter((x) => x.refused === true)
+      case 'stand-down':
+        return receipts.filter(
+          (x) => x.action === 'stand-down' || x.decision === 'stand_down'
+        )
+      default:
+        return receipts
+    }
+  }, [receipts, filter])
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const safePage = Math.min(page, pageCount)
+  const rows = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+
+  const filterBtn = (key: typeof filter, label: string, count: number) => (
+    <button
+      onClick={() => {
+        setFilter(key)
+        setPage(1)
+      }}
+      className={`px-4 py-2 text-xs font-medium transition-colors btn-cut ${
+        filter === key
+          ? 'bg-white text-black'
+          : 'bg-white/5 text-white/70 hover:bg-white/15'
+      }`}
+    >
+      {label} · {count}
+    </button>
+  )
+
+  return (
+    <div className="min-h-screen w-full bg-black p-3 md:p-4 font-inter">
+      <div className="w-full min-h-screen rounded-2xl flex flex-col overflow-hidden relative bg-[#0a0a0f] border border-white/10">
+        <div className="relative z-10 flex-1 flex flex-col px-6 md:px-10 py-8">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-4">
+              <a
+                href="#/"
+                className="w-10 h-10 bg-white flex items-center justify-center text-black hover:bg-white/90 transition-colors btn-cut-sm"
+              >
+                <ArrowLeft className="w-4 h-4" />
+              </a>
+              <div>
+                <h1 className="text-white text-2xl md:text-3xl font-medium tracking-[-0.02em]">
+                  Live audit stream
+                </h1>
+                <p className="text-white/50 text-xs mt-1">
+                  Every decision Cordon made, straight from{' '}
+                  <code className="text-white/70">receipts.json</code>
+                </p>
+              </div>
+            </div>
+            <a
+              href="/receipts.json"
+              target="_blank"
+              rel="noreferrer"
+              className="hidden md:block px-5 py-2.5 text-white text-sm hover:bg-white/10 btn-cut-border transition-colors"
+            >
+              <span>raw JSON</span>
+            </a>
+          </div>
+
+          {/* Stats */}
+          {stats && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="text-white/50 text-xs">Total receipts</div>
+                <div className="text-white text-3xl font-medium mt-1">
+                  {stats.total}
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="text-white/50 text-xs">Executed on-chain</div>
+                <div className="text-emerald-400 text-3xl font-medium mt-1">
+                  {stats.executed}
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="text-white/50 text-xs">Simulation refusals</div>
+                <div className="text-amber-400 text-3xl font-medium mt-1">
+                  {stats.refused}
+                </div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="text-white/50 text-xs">Stand-downs (healthy)</div>
+                <div className="text-sky-400 text-3xl font-medium mt-1">
+                  {stats.standDown}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Filters */}
+          {stats && (
+            <div className="flex flex-wrap gap-2 mb-4">
+              {filterBtn('all', 'All', stats.total)}
+              {filterBtn('executed', 'Executed', stats.executed)}
+              {filterBtn('refused', 'Refused', stats.refused)}
+              {filterBtn('stand-down', 'Stand-down', stats.standDown)}
+            </div>
+          )}
+
+          {/* Table */}
+          {error ? (
+            <div className="text-red-400 text-sm">Failed to load receipts: {error}</div>
+          ) : !receipts ? (
+            <div className="text-white/50 text-sm">Loading receipts…</div>
+          ) : (
+            <div className="flex-1 overflow-auto rounded-xl border border-white/10 bg-white/[0.02]">
+              <table className="w-full text-left text-sm">
+                <thead className="sticky top-0 bg-[#0d0d14] text-white/50 text-xs uppercase tracking-wider">
+                  <tr>
+                    <th className="px-4 py-3">#</th>
+                    <th className="px-4 py-3">Decision</th>
+                    <th className="px-4 py-3">Tx hash</th>
+                    <th className="px-4 py-3">HF before → after</th>
+                    <th className="px-4 py-3">Asset / amount</th>
+                    <th className="px-4 py-3">Execution ID</th>
+                    <th className="px-4 py-3">Time (UTC)</th>
+                  </tr>
+                </thead>
+                <tbody className="text-white/80">
+                  {rows.map((x, i) => {
+                    const idx = (safePage - 1) * PAGE_SIZE + i
+                    const hf = (v?: string | number | null) => {
+                      if (v == null) return '—'
+                      const n = Number(v)
+                      if (n >= 1e60) return '∞' // no-debt position → max uint256 HF
+                      return n / 1e18 >= 1 ? (n / 1e18).toFixed(2) : String(n)
+                    }
+                    return (
+                      <tr
+                        key={idx}
+                        className="border-t border-white/5 hover:bg-white/[0.03]"
+                      >
+                        <td className="px-4 py-2.5 text-white/40">{idx + 1}</td>
+                        <td className="px-4 py-2.5">
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded ${
+                              x.refused
+                                ? 'bg-amber-400/10 text-amber-300'
+                                : x.action === 'stand-down' || x.decision === 'stand_down'
+                                ? 'bg-sky-400/10 text-sky-300'
+                                : 'bg-emerald-400/10 text-emerald-300'
+                            }`}
+                          >
+                            {x.refused ? 'REFUSED' : x.action ?? x.decision ?? x.status ?? '—'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          {x.txHash ? (
+                            <a
+                              href={`https://sepolia.etherscan.io/tx/${x.txHash}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-white/80 hover:text-white underline decoration-white/20 font-mono text-xs"
+                            >
+                              {shortHash(x.txHash)}
+                            </a>
+                          ) : (
+                            <span className="text-white/30 text-xs">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 font-mono text-xs">
+                          {hf(x.healthFactorBefore)} → {hf(x.healthFactorAfter)}
+                        </td>
+                        <td className="px-4 py-2.5 text-xs">
+                          {x.asset ?? '—'} {x.amount != null ? x.amount : ''}
+                        </td>
+                        <td className="px-4 py-2.5 font-mono text-xs text-white/50">
+                          {x.executionId ? shortHash(x.executionId, 8) : '—'}
+                        </td>
+                        <td className="px-4 py-2.5 text-xs text-white/40">
+                          {x.timestamp ? x.timestamp.replace('T', ' ').slice(0, 16) : '—'}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Pagination */}
+          {filtered.length > 0 && (
+            <div className="flex items-center justify-between mt-4">
+              <div className="text-white/40 text-xs">
+                {filtered.length} receipts · page {safePage} / {pageCount}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={safePage <= 1}
+                  className="px-4 py-2 text-xs bg-white/5 text-white/70 hover:bg-white/15 disabled:opacity-30 btn-cut transition-colors"
+                >
+                  Prev
+                </button>
+                <button
+                  onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                  disabled={safePage >= pageCount}
+                  className="px-4 py-2 text-xs bg-white/5 text-white/70 hover:bg-white/15 disabled:opacity-30 btn-cut transition-colors"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function HeroPage() {
   return (
     <div className="min-h-screen w-full bg-black p-3 md:p-4 font-inter">
       <div className="w-full min-h-screen rounded-2xl flex flex-col overflow-hidden relative bg-black">
@@ -65,12 +343,10 @@ export default function App() {
             style={{ animationDelay: '0.2s' }}
           >
             <a
-              href="https://github.com/thesithunyein/cordon"
-              target="_blank"
-              rel="noreferrer"
+              href="#/audit"
               className="hidden md:block px-5 py-2.5 text-white text-sm hover:bg-white/10 btn-cut-border transition-colors"
             >
-              <span>Source</span>
+              <span>Live proof</span>
             </a>
             <a
               href="https://github.com/thesithunyein/cordon"
@@ -198,8 +474,14 @@ export default function App() {
             style={{ animationDelay: '1.15s' }}
           >
             <span className="text-white/60 text-xs tracking-wide">
-              38 on-chain transactions · 12 refusals · 25 stand-downs
+              165 on-chain transactions · 15 refusals · 95 stand-downs
             </span>
+            <a
+              href="#/audit"
+              className="text-white/60 text-xs underline decoration-white/20 hover:text-white transition-colors"
+            >
+              live audit stream
+            </a>
             <a
               href="https://github.com/thesithunyein/cordon/blob/master/harness/receipts/receipts.json"
               target="_blank"
@@ -221,4 +503,17 @@ export default function App() {
       </div>
     </div>
   )
+}
+
+export default function App() {
+  const [route, setRoute] = useState(window.location.hash)
+
+  useEffect(() => {
+    const onHash = () => setRoute(window.location.hash)
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  if (route.startsWith('#/audit')) return <AuditPage />
+  return <HeroPage />
 }

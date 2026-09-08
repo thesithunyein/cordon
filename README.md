@@ -15,8 +15,23 @@
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg">
   <img alt="Network: Ethereum Sepolia" src="https://img.shields.io/badge/network-Sepolia-6b5b95.svg">
   <img alt="Status: live" src="https://img.shields.io/badge/status-live-success.svg">
-  <img alt="Transactions" src="https://img.shields.io/badge/transactions-verified-green.svg">
+  <img alt="Transactions" src="https://img.shields.io/badge/transactions-165%20verified-green.svg">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-50%20passing-brightgreen.svg">
+  <img alt="CI" src="https://github.com/thesithunyein/cordon/actions/workflows/ci.yml/badge.svg">
 </p>
+
+<p align="center">
+  <b>Live audit stream:</b> <a href="https://cordon.sithunyein.com/#/audit">cordon.sithunyein.com/#/audit</a> — every decision, paginated
+</p>
+
+| | |
+|---|---|
+| **On-chain executions through KeeperHub** | **165 verified** (Sepolia, `status: 0x1`) |
+| **Simulation refusals (zero gas)** | **15** — reverts caught before broadcast |
+| **Stand-downs logged** | **95** — healthy positions left untouched |
+| **Health factor raised** | **4.50 → 67.50** by real protective top-ups |
+| **Execution IDs exposed** | 125 receipts carry the KeeperHub execution id |
+| **Regressions** | **0** |
 
 <p align="center">
   <i>“The gap between seeing the danger and acting on it is where people lose money.<br>
@@ -130,16 +145,19 @@ records the refusal — zero gas spent, honest evidence logged.
 
 All transaction hashes live in
 [`harness/receipts/receipts.json`](harness/receipts/receipts.json). Every figure below
-is recomputable with `node harness/scripts/verify-receipts.mjs`.
+is recomputable with `node harness/scripts/verify-receipts.mjs`. There is also a **live
+audit stream** at <https://cordon.sithunyein.com/#/audit> — the same corpus, served from
+the site and rendered as a paginated, filterable table.
 
-- **Transactions executed through KeeperHub:** 38
-- **Guard cycles recorded:** 75 (setup + protects + stand-downs)
-- **Protective top-ups executed on-chain:** 28 — health factor raised from **4.50 to 67.50** across the corpus
-- **Simulation refusals (zero gas):** 12 — allowance and balance exhaustion, both caught before broadcast (playbook in [WHAT-BREAKS.md](harness/docs/WHAT-BREAKS.md))
-- **Stand-downs logged:** 25 — healthy positions correctly left untouched
+- **Transactions executed through KeeperHub:** 165
+- **Guard cycles recorded:** 286 (setup + protects + stand-downs + refusals)
+- **Protective top-ups executed on-chain:** 168 — health factor raised from **4.50 to 67.50** across the corpus
+- **Simulation refusals (zero gas):** 15 — allowance and balance exhaustion, both caught before broadcast (playbook in [WHAT-BREAKS.md](harness/docs/WHAT-BREAKS.md))
+- **Stand-downs logged:** 95 — healthy positions correctly left untouched
+- **Receipts carrying the KeeperHub execution id:** 125 — the KeeperHub team can look any of these up directly in their system
 - **Regressions:** 0
 
-Verified 2026-09-08 against a public Sepolia RPC: **38/38 receipts returned `status: 0x1`.**
+Verified 2026-09-08 against a public Sepolia RPC: **165/165 receipts returned `status: 0x1`.**
 
 The CI pipeline re-runs this verification on every push
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
@@ -154,8 +172,9 @@ The CI pipeline re-runs this verification on every push
 | Faucet mint (LINK) | [`0x69d7…eea61`](https://sepolia.etherscan.io/tx/0x69d7397478c42c997238c5d9e3a28f16b4f87e3d9ecb834c1d3e26f4ab5eea61) |
 | Re-approve LINK (post-exhaustion) | [`0xa10a…23d2`](https://sepolia.etherscan.io/tx/0xa10a7f821b487fa7b207204f40e797d7bb3f61cfa14259ac954d9c05562a23d2) |
 
-All 38 hashes, with per-transaction gas and health-factor movement, are in
-[`harness/receipts/receipts.json`](harness/receipts/receipts.json).
+All 165 hashes, with per-transaction gas and health-factor movement, are in
+[`harness/receipts/receipts.json`](harness/receipts/receipts.json) and visible live at
+<https://cordon.sithunyein.com/#/audit>.
 
 To verify any hash end to end:
 
@@ -181,7 +200,8 @@ cordon/
 ├── public/
 │   ├── cordon-logo.png         # shield mark (light background)
 │   ├── cordon-logo-black.png   # shield mark (dark background)
-│   └── cordon-favicon.png      # browser favicon
+│   ├── cordon-favicon.png      # browser favicon
+│   └── receipts.json           # evidence corpus served at /receipts.json (synced)
 ├── harness/                    # the product — a KeeperHub integration
 │   ├── src/
 │   │   ├── config.ts           # org, network, threshold, position address
@@ -198,6 +218,7 @@ cordon/
 │   │   └── receipts.json       # every tx hash, status, gas — recomputable
 │   ├── scripts/
 │   │   ├── verify-receipts.mjs # verifies every receipt against a public RPC
+│   │   ├── sync-public-evidence.mjs # copies receipts.json → public/ for the live audit stream
 │   │   ├── approve-reserve.ts  # ensure Pool allowance (simulate → execute)
 │   │   └── mint-reserve.ts     # mint testnet assets from the Aave faucet
 │   ├── docs/
@@ -233,7 +254,8 @@ npm run campaign                # N cycles → receipts/receipts.json (append-on
 npm run mint                    # mint testnet assets from the Aave Sepolia faucet
 npm run approve                 # approve a reserve for the Aave Pool
 npm run verify                  # verify every receipt against a public RPC
-npm test                        # unit + evidence-integrity tests
+npm run sync:site               # publish receipts.json to the live audit stream
+npm test                        # unit + evidence-integrity tests (50)
 ```
 
 **Example `.env`**
@@ -312,8 +334,9 @@ A candid answer here has never hurt a submission; pretending testnet is mainnet 
 
 - [x] Live Aave V3 Sepolia integration through KeeperHub
 - [x] Detect → simulate → execute → verify loop, proven on-chain
-- [x] 38 executed receipts, all re-verified on-chain (CI-enforced)
-- [x] Unit tests + evidence-integrity tests
+- [x] 165 executed receipts, all re-verified on-chain (CI-enforced)
+- [x] 50 unit + evidence-integrity tests, CI on every push
+- [x] Live audit stream (receipts.json served + paginated on the site)
 - [ ] Multi-position watch list
 - [ ] Telegram / Discord alerts on success *and* failure
 - [ ] Per-position, per-asset thresholds

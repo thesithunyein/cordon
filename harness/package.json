@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "approve": "tsx scripts/approve-reserve.ts",
     "mint": "tsx scripts/mint-reserve.ts",
-    "test": "node --import tsx --test src/*.test.ts"
+    "test": "node --import tsx --test src/*.test.ts src/workflows/*.test.ts",
+    "sync:site": "node scripts/sync-public-evidence.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

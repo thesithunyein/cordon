@@ -83,3 +83,78 @@ test('aave: official AaveV3Sepolia registry addresses (aave-address-book)', () =
   assert.equal(RESERVES.USDC.underlying, '0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8')
   assert.equal(decimalsOf('DAI'), 18)
 })
+
+test('aave: fractional top-up amounts round correctly', () => {
+  assert.equal(toWei('USDC', 0.5), '500000') // 6 decimals
+  assert.equal(toWei('LINK', 2.25), '2250000000000000000') // 18 decimals
+})
+
+test('detect(): max uint health factor (empty position) is never at risk', async () => {
+  const MAX = '115792089237316195423570985008687907853269984665640564039457584007913129639935'
+  const g = new Guardian(new FakeKeeperHub({ healthFactor: MAX }) as never, baseConfig)
+  const snap = await g.detect()
+  assert.equal(snap.atRisk, false)
+})
+
+test('detect(): zero health factor (liquidated) is at risk', async () => {
+  const g = new Guardian(new FakeKeeperHub({ healthFactor: '0' }) as never, baseConfig)
+  const snap = await g.detect()
+  assert.equal(snap.atRisk, true)
+})
+
+test('protect(): a refused simulation propagates without touching the chain', async () => {
+  class RefusingKH {
+    async safeProtocolWrite() {
+      return { refused: true, status: 'failed', error: 'Error(51): insufficient balance' }
+    }
+  }
+  const g = new Guardian(new RefusingKH() as never, baseConfig)
+  const res = await g.protect('LINK', 5, 'nonce-1')
+  assert.equal(res.refused, true)
+  assert.equal(res.txHash, undefined)
+  assert.match(res.error ?? '', /insufficient balance/)
+})
+
+test('protect(): completed result carries txHash and executionId', async () => {
+  class DoneKH {
+    async safeProtocolWrite() {
+      return { refused: false, status: 'completed', txHash: '0xabc', executionId: 'exec-42' }
+    }
+  }
+  const g = new Guardian(new DoneKH() as never, baseConfig)
+  const res = await g.protect('LINK', 5, 'nonce-2')
+  assert.equal(res.refused, false)
+  assert.equal(res.txHash, '0xabc')
+  assert.equal(res.executionId, 'exec-42')
+})
+
+test('protect(): idempotency key is stable for a given position + nonce', async () => {
+  const sent: string[] = []
+  class CaptureKH {
+    async safeProtocolWrite(args: { idempotencyKey: string }) {
+      sent.push(args.idempotencyKey)
+      return { refused: true, status: 'failed' }
+    }
+  }
+  const g = new Guardian(new CaptureKH() as never, baseConfig)
+  await g.protect('LINK', 5, 'round-7')
+  await g.protect('LINK', 5, 'round-7')
+  assert.equal(sent[0], sent[1], 'same position+nonce must produce the same key (replay-safe)')
+  assert.match(sent[0], /cordon-topup-.*-round-7-supply/)
+})
+
+test('detect(): passes the correct protocol action arguments', async () => {
+  let seen: Record<string, unknown> = {}
+  class CaptureKH {
+    async callTool(name: string, args: Record<string, unknown>) {
+      seen = { name, args }
+      return { isError: false, text: '', data: { result: { healthFactor: '1500000000000000000' } } }
+    }
+  }
+  const g = new Guardian(new CaptureKH() as never, baseConfig)
+  await g.detect()
+  assert.equal(seen.name, 'execute_protocol_action')
+  assert.equal((seen.args as any).actionType, 'aave-v3/get-user-account-data')
+  assert.equal((seen.args as any).params.user, baseConfig.positionAddress)
+  assert.equal((seen.args as any).params.network, '11155111')
+})

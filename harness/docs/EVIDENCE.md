@@ -16,6 +16,7 @@ Each row records one guard-cycle or campaign execution:
 | `action` / `asset` / `amount` | the protective transaction (supply of `asset`) |
 | `refused` | `true` = the simulation gate blocked the write (no gas spent) |
 | `txHash` | Sepolia transaction, broadcast by KeeperHub |
+| `executionId` | KeeperHub execution id (newer rows) — the KeeperHub team can look this up directly in their system |
 | `status` | `completed` / `failed` / `error` |
 | `error` | the honest failure text, when there was one |
 

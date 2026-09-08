@@ -24,15 +24,23 @@ export interface CordonConfig {
   chainId: number
 }
 
+/** Parse a number env var, falling back when absent or not a finite number. */
+function numberEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (raw === undefined || raw.trim() === '') return fallback
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : fallback
+}
+
 export function loadConfig(): CordonConfig {
   return {
     khApiKey: required('KH_API_KEY'),
     positionAddress: required('POSITION_ADDRESS'),
-    healthFactorThreshold: Number(process.env.HEALTH_FACTOR_THRESHOLD ?? '1.5'),
+    healthFactorThreshold: numberEnv('HEALTH_FACTOR_THRESHOLD', 1.5),
     reserve: (process.env.RESERVE ?? 'USDC') as CordonConfig['reserve'],
-    topUpAmount: Number(process.env.TOP_UP_AMOUNT ?? '10'),
-    campaignRounds: Number(process.env.CAMPAIGN_ROUNDS ?? '10'),
+    topUpAmount: numberEnv('TOP_UP_AMOUNT', 10),
+    campaignRounds: numberEnv('CAMPAIGN_ROUNDS', 10),
     verifyReceipts: (process.env.VERIFY_RECEIPTS ?? 'true') === 'true',
-    chainId: Number(process.env.CHAIN_ID ?? '11155111'),
+    chainId: numberEnv('CHAIN_ID', 11155111),
   }
 }

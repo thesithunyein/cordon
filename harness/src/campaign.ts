@@ -68,7 +68,11 @@ async function main() {
 
       const after = protection.status === 'completed' ? await guardian.verify() : null
       if (escalate && after?.healthFactor) {
-        config.healthFactorThreshold = Number(after.healthFactor) / 1e18 + 0.5
+        // Each 5 LINK top-up raises the health factor by ~2.25 and the verify
+        // read can lag one round behind the chain, so a small +0.5 margin lets
+        // the threshold catch up with the rising HF and the run stalls. Use a
+        // margin above the per-round gain so the threshold always stays ahead.
+        config.healthFactorThreshold = Number(after.healthFactor) / 1e18 + 2.6
         console.log(`      → threshold escalated to ${config.healthFactorThreshold.toFixed(2)}`)
       }
       const receipt: Receipt = {
@@ -83,6 +87,7 @@ async function main() {
         amount: String(config.topUpAmount),
         refused: protection.refused,
         txHash: protection.txHash ?? null,
+        executionId: protection.executionId ?? null,
         status: protection.status,
         error: protection.error ?? null,
       }
