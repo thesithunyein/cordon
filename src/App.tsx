@@ -433,7 +433,7 @@ function HeroPage() {
                 Powered by KeeperHub
               </span>
               <a
-                href="https://github.com/thesithunyein/cordon"
+                href="https://github.com/thesithunyein/cordon#architecture"
                 target="_blank"
                 rel="noreferrer"
                 className="w-full max-w-[280px] py-3.5 bg-white flex items-center justify-center gap-2 text-black hover:bg-white/90 transition-colors group btn-cut"
