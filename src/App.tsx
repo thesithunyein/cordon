@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowRight, ArrowLeft } from 'lucide-react'
 
-function CordonLogo() {
+function CordonLogo({ className }: { className?: string }) {
   return (
     <img
       src="/cordon-logo.png"
       alt="Cordon"
-      className="w-24 h-24 md:w-28 md:h-28 object-contain"
+      className={className ?? 'w-24 h-24 md:w-28 md:h-28 object-contain'}
     />
   )
 }
@@ -131,18 +131,35 @@ function AuditPage() {
   return (
     <div className="min-h-screen w-full bg-black p-3 md:p-4 font-inter">
       <div className="w-full min-h-screen rounded-2xl flex flex-col overflow-hidden relative bg-[#0a0a0f] border border-white/10">
+        {/* Backdrop video — same asset as the landing page, dimmed for readability */}
+        <video
+          src="https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260717_120352_eb988725-1351-43b3-8095-16e4a1005e3d.mp4"
+          autoPlay
+          loop
+          muted
+          playsInline
+          className="absolute inset-0 w-full h-full object-cover opacity-[0.14] anim-fade"
+          style={{ animationDelay: '0.1s' }}
+        />
+        <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-black/75 to-black/90" />
+
         <div className="relative z-10 flex-1 flex flex-col px-6 md:px-10 py-8">
-          {/* Header */}
+          {/* Header — mirrors the landing navbar: logo, hero-styled title, cut buttons */}
           <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4 anim-stagger" style={{ animationDelay: '0.1s' }}>
               <a
                 href="#/"
-                className="w-10 h-10 bg-white flex items-center justify-center text-black hover:bg-white/90 transition-colors btn-cut-sm"
+                aria-label="Back to home"
+                className="w-10 h-10 shrink-0 bg-white flex items-center justify-center text-black hover:bg-white/90 transition-colors btn-cut-sm"
               >
                 <ArrowLeft className="w-4 h-4" />
               </a>
+              <CordonLogo className="hidden sm:block w-12 h-12 md:w-14 md:h-14 object-contain" />
               <div>
-                <h1 className="text-white text-2xl md:text-3xl font-medium tracking-[-0.02em]">
+                <h1
+                  className="text-white text-2xl md:text-4xl font-normal leading-[1.1] tracking-[-0.04em]"
+                  style={{ textShadow: '0 2px 12px rgba(0,0,0,0.25)' }}
+                >
                   Live audit stream
                 </h1>
                 <p className="text-white/50 text-xs mt-1">
@@ -151,19 +168,29 @@ function AuditPage() {
                 </p>
               </div>
             </div>
-            <a
-              href="/receipts.json"
-              target="_blank"
-              rel="noreferrer"
-              className="hidden md:block px-5 py-2.5 text-white text-sm hover:bg-white/10 btn-cut-border transition-colors"
-            >
-              <span>raw JSON</span>
-            </a>
+            <div className="flex items-center gap-3 anim-stagger" style={{ animationDelay: '0.2s' }}>
+              <a
+                href="https://github.com/thesithunyein/cordon"
+                target="_blank"
+                rel="noreferrer"
+                className="hidden md:block px-5 py-2.5 text-white text-sm hover:bg-white/10 btn-cut-border transition-colors"
+              >
+                <span>GitHub</span>
+              </a>
+              <a
+                href="/receipts.json"
+                target="_blank"
+                rel="noreferrer"
+                className="px-5 py-2.5 bg-white text-black text-sm hover:bg-white/90 btn-cut transition-colors"
+              >
+                raw JSON
+              </a>
+            </div>
           </div>
 
           {/* Stats */}
           {stats && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6 anim-stagger" style={{ animationDelay: '0.3s' }}>
               <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
                 <div className="text-white/50 text-xs">Total receipts</div>
                 <div className="text-white text-3xl font-medium mt-1">
@@ -193,7 +220,7 @@ function AuditPage() {
 
           {/* Filters */}
           {stats && (
-            <div className="flex flex-wrap gap-2 mb-4">
+            <div className="flex flex-wrap gap-2 mb-4 anim-stagger" style={{ animationDelay: '0.4s' }}>
               {filterBtn('all', 'All', stats.total)}
               {filterBtn('executed', 'Executed', stats.executed)}
               {filterBtn('refused', 'Refused', stats.refused)}
@@ -205,9 +232,9 @@ function AuditPage() {
           {error ? (
             <div className="text-red-400 text-sm">Failed to load receipts: {error}</div>
           ) : !receipts ? (
-            <div className="text-white/50 text-sm">Loading receipts…</div>
+            <div className="text-white/50 text-sm anim-fade" style={{ animationDelay: '0.3s' }}>Loading receipts…</div>
           ) : (
-            <div className="flex-1 overflow-auto rounded-xl border border-white/10 bg-white/[0.02]">
+            <div className="flex-1 overflow-auto rounded-xl border border-white/10 bg-white/[0.02] anim-stagger" style={{ animationDelay: '0.5s' }}>
               <table className="w-full text-left text-sm">
                 <thead className="sticky top-0 bg-[#0d0d14] text-white/50 text-xs uppercase tracking-wider">
                   <tr>
@@ -284,7 +311,7 @@ function AuditPage() {
 
           {/* Pagination */}
           {filtered.length > 0 && (
-            <div className="flex items-center justify-between mt-4">
+            <div className="flex items-center justify-between mt-4 anim-stagger" style={{ animationDelay: '0.65s' }}>
               <div className="text-white/40 text-xs">
                 {filtered.length} receipts · page {safePage} / {pageCount}
               </div>
@@ -474,7 +501,7 @@ function HeroPage() {
             style={{ animationDelay: '1.15s' }}
           >
             <span className="text-white/60 text-xs tracking-wide">
-              1,055 on-chain transactions · 91 refusals · 147 stand-downs
+              1,080 on-chain transactions · 91 refusals · 136 stand-downs
             </span>
             <a
               href="#/audit"

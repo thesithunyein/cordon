@@ -28,15 +28,15 @@ the execution layer for Aave position protection:
    Turnkey non-custodial wallet), polls to terminal status, and re-reads the health
    factor to verify the protection landed.
 4. Records every step as a receipt: decision, tx hash, KeeperHub execution id, health
-   factor before/after. 1,293 receipts, all recomputable on-chain.
+   factor before/after. 1,318 receipts, all recomputable on-chain.
 
 The integration is specific to Aave: it speaks Aave's health-factor semantics, uses
 Aave's faucet mechanics, handles Aave's revert codes (Error(51), reserve caps), and
 protects against Aave liquidations. It is not a generic wrapper.
 
-**Proof:** 1,055 executed transactions (all `status: 0x1` on Sepolia, re-verified by CI
-on every push), 90 simulation refusals across five revert conditions (zero gas), 145
-stand-downs, health factor driven 4.50 → 1,100+ by real top-ups. Live audit stream:
+**Proof:** 1,080 executed transactions (all `status: 0x1` on Sepolia, re-verified by CI
+on every push), 91 simulation refusals across five revert conditions (zero gas), 136
+stand-downs, health factor driven 4.50 → 2,400+ by real top-ups. Live audit stream:
 https://cordon.sithunyein.com/#/audit. Sample verification table with Etherscan links
 and KeeperHub execution ids in the README.
 
@@ -52,7 +52,7 @@ and KeeperHub execution ids in the README.
   platform-validated (`valid: true`, 4 nodes), snapshot committed at
   `harness/workflows/guardian.platform.json`.
 - **Audit trail:** every execution's KeeperHub execution id is stored in the receipt
-  corpus (1,029 ids) — the KeeperHub team can look up any of them directly.
+  corpus (1,039 ids) — the KeeperHub team can look up any of them directly.
 - **Simulation / dry-run before touching the chain:** the core safety property — five
   distinct revert conditions caught pre-broadcast, zero gas spent on any of them.
 

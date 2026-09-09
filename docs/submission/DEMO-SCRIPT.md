@@ -67,7 +67,7 @@ Open the README's **Verify any execution yourself** table.
 npm run verify
 ```
 
-> "The CI re-runs this on every push — 1,055 receipts re-verified against a public
+> "The CI re-runs this on every push — 1,080 receipts re-verified against a public
 > RPC, zero failures."
 
 ## 3:15–4:15 — Workflow-as-code (the agent-economy story)
@@ -83,8 +83,8 @@ npm run verify
 ## 4:15–5:00 — Close
 
 > "Cordon is the execution layer the KeeperHub theme describes: deterministic,
-> simulated before broadcast, idempotent, audited. 500-plus on-chain protections
-> across a 535-times health-factor range, 91 refusals, 147 stand-downs, zero
+> simulated before broadcast, idempotent, audited. 1,080 on-chain protections
+> across a 541-times health-factor range, 91 refusals, 136 stand-downs, zero
 > regressions — and an open-source bounty PR implementing KeeperHub's own accepted
 > issue. Your position is protected, not just alerted. Cordon off your risk."
 
