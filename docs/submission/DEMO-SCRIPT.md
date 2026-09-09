@@ -84,7 +84,7 @@ npm run verify
 
 > "Cordon is the execution layer the KeeperHub theme describes: deterministic,
 > simulated before broadcast, idempotent, audited. 1,080 on-chain protections
-> across a 541-times health-factor range, 91 refusals, 136 stand-downs, zero
+> across a 541-times health-factor range, 91 refusals, 147 stand-downs, zero
 > regressions — and an open-source bounty PR implementing KeeperHub's own accepted
 > issue. Your position is protected, not just alerted. Cordon off your risk."
 

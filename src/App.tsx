@@ -30,6 +30,14 @@ type Receipt = {
 
 const PAGE_SIZE = 25
 
+// Stand-downs appear with either field spelling across receipt eras:
+// { action: 'stand-down' } or { decision: 'stand-down' | 'stand_down' }.
+const isStandDown = (x: Receipt) =>
+  x.action === 'stand-down' ||
+  x.action === 'stand_down' ||
+  x.decision === 'stand-down' ||
+  x.decision === 'stand_down'
+
 function shortHash(h: string, n = 10) {
   if (!h) return '—'
   return `${h.slice(0, n)}…${h.slice(-4)}`
@@ -60,9 +68,7 @@ function AuditPage() {
       (x) => x.status === 'completed' && !x.refused && x.txHash
     ).length
     const refused = receipts.filter((x) => x.refused === true).length
-    const standDown = receipts.filter(
-      (x) => x.action === 'stand-down' || x.decision === 'stand_down'
-    ).length
+    const standDown = receipts.filter(isStandDown).length
     return { total: receipts.length, executed, refused, standDown }
   }, [receipts])
 
@@ -76,9 +82,7 @@ function AuditPage() {
       case 'refused':
         return receipts.filter((x) => x.refused === true)
       case 'stand-down':
-        return receipts.filter(
-          (x) => x.action === 'stand-down' || x.decision === 'stand_down'
-        )
+        return receipts.filter(isStandDown)
       default:
         return receipts
     }
@@ -243,7 +247,7 @@ function AuditPage() {
                             className={`text-xs px-2 py-0.5 rounded ${
                               x.refused
                                 ? 'bg-amber-400/10 text-amber-300'
-                                : x.action === 'stand-down' || x.decision === 'stand_down'
+                                : isStandDown(x)
                                 ? 'bg-sky-400/10 text-sky-300'
                                 : 'bg-emerald-400/10 text-emerald-300'
                             }`}
@@ -449,7 +453,7 @@ function HeroPage() {
             style={{ animationDelay: '1.15s' }}
           >
             <span className="text-white/60 text-xs tracking-wide">
-              1,080 on-chain transactions · 91 refusals · 136 stand-downs
+              1,080 on-chain transactions · 91 refusals · 147 stand-downs
             </span>
             <a
               href="#/audit"

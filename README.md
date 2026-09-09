@@ -28,7 +28,7 @@
 |---|---|
 | **On-chain executions through KeeperHub** | **1,080 verified** (Sepolia, `status: 0x1`) |
 | **Simulation refusals (zero gas)** | **91** — reverts caught before broadcast |
-| **Stand-downs logged** | **136** — healthy positions left untouched |
+| **Stand-downs logged** | **147** — healthy positions left untouched |
 | **Health factor raised** | **4.50 → 2,435** by real protective top-ups |
 | **Execution IDs exposed** | 1,039 receipts carry the KeeperHub execution id |
 | **Regressions** | **0** |
@@ -154,7 +154,7 @@ the site and rendered as a paginated, filterable table.
 - **Guard cycles recorded:** 1,318 (setup + protects + stand-downs + refusals)
 - **Protective top-ups executed on-chain:** 1,080 — health factor raised from **4.50 to 2,435** across the corpus
 - **Simulation refusals (zero gas):** 91 — allowance exhaustion, balance exhaustion and a full reserve cap, all caught before broadcast (playbook in [WHAT-BREAKS.md](harness/docs/WHAT-BREAKS.md))
-- **Stand-downs logged:** 136 — healthy positions correctly left untouched
+- **Stand-downs logged:** 147 — healthy positions correctly left untouched
 - **Receipts carrying the KeeperHub execution id:** 1,039 — the KeeperHub team can look any of these up directly in their system
 - **Regressions:** 0
 
@@ -166,7 +166,7 @@ the 1,080 protections span a **541× health-factor range** — the guardian deci
 correctly at every risk level from **near-liquidation (HF 4.50, the threshold
 is 1.5)** to **ultra-safe (HF 2,400+)**. Mixed in are the decisions that prove
 restraint: **91 simulation refusals** (a doomed transaction never reached the
-chain, five distinct revert conditions) and **136 stand-downs** (a healthy
+chain, five distinct revert conditions) and **147 stand-downs** (a healthy
 position was never touched). Detection, refusal, and restraint all verified
 on-chain — that is the reliability claim, in receipts rather than prose.
 
