@@ -35,8 +35,8 @@ Aave's faucet mechanics, handles Aave's revert codes (Error(51), reserve caps), 
 protects against Aave liquidations. It is not a generic wrapper.
 
 **Proof:** 1,080 executed transactions (all `status: 0x1` on Sepolia, re-verified by CI
-on every push), 91 simulation refusals across five revert conditions (zero gas), 136
-stand-downs, health factor driven 4.50 → 2,400+ by real top-ups. Live audit stream:
+on every push), 91 simulation refusals across five revert conditions (zero gas), 147
+stand-downs, health factor driven 4.50 → 2,435 (541×) by real top-ups. Live audit stream:
 https://cordon.sithunyein.com/#/audit. Sample verification table with Etherscan links
 and KeeperHub execution ids in the README.
 

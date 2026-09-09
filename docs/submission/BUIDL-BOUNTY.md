@@ -27,6 +27,14 @@ pipeline:
   broadcast → completed`, with latency histograms over the stages.
 - **`workflow-runner`** emits the correlation id on start/completion/fatal logs, so
   the runner joins the same trace.
+- **Job pods** — the production dispatch path for web3 writes — ship point latency
+  observations (`{correlationId, stage, durationMs}`) over the existing metrics
+  ingest; the executor folds them into the central histograms. Pods cannot merge
+  histogram state, but point samples compose exactly — so the headline
+  observed→broadcast distribution is filled where nearly all production writes run,
+  not just in-process executions. Clock-skew is bounded by anchoring completion on
+  the executor's own received stamp; the correlation map is bounded and degrades
+  gracefully.
 
 Result: one grep-able key joins logs across three systems, and per-stage latency is
 measurable in production — the groundwork for the SLO dashboards the issue calls for.
@@ -42,18 +50,22 @@ measurable in production — the groundwork for the SLO dashboards the issue cal
 
 ## Code quality and tests
 
-- **20 new tests** across both packages; full suites green: executor **143 tests**,
-  event-tracker **222 tests**.
-- `tsc` clean in both packages; LF-clean diff (13 files, +614/−13); biome-formatted.
-- PR: **OPEN and MERGEABLE** against `staging` (no conflicts, issue-link check
-  passing).
+- Full suites green: executor **168 tests** (143 before the PR), event-tracker
+  **222 tests**; `tsc` clean in both packages; biome-formatted; LF-clean diff.
+- Diff: 31 files, +1,920/−36 across 4 commits — round one implemented the pipeline,
+  round two (same day as review) closed the Job-pod dispatch-path gap the first
+  round left open.
+- Review status: all four reviewer defects fixed point-by-point within a day,
+  follow-up pushed; **CHANGES_REQUESTED, awaiting re-review**. If the size is a
+  concern we'll split into reviewable pieces — offered publicly in the thread.
 
 ## Scope and completeness
 
-Complete through the whole pipeline the issue describes. The only documented
-follow-up is the consumer of the new latency histograms (dashboard/alerting), which
-is the issue's stage-2 rather than missing scope — the instrumentation contract it
-needs is fully in place.
+Complete through the whole pipeline the issue describes, on both dispatch paths
+(in-process and k8s Jobs). Both new metrics are documented in the platform's
+`METRICS_REFERENCE.md`. The only documented follow-up is the consumer of the new
+latency histograms (dashboard/alerting) — the issue's stage-2, not missing scope;
+the instrumentation contract it needs is fully in place.
 
 ## Links
 
