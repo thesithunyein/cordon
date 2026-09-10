@@ -33,3 +33,6 @@ Thumbs.db
 harness/.env
 
 .vercel
+
+# Submission drafts stay local-only (pasted into BUIDL forms, not published)
+docs/submission/
