@@ -19,6 +19,8 @@ jobs:
   guard:
     name: Execute guard cycle
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # commit the new receipts
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -35,7 +37,12 @@ jobs:
           POSITION_ADDRESS: ${{ secrets.POSITION_ADDRESS }}
           RESERVE: LINK
           TOP_UP_AMOUNT: "5"
-          CAMPAIGN_ROUNDS: "6"
+          CAMPAIGN_ROUNDS: "2"
+          # Seed above the position's current health factor (~2,435 and rising
+          # +2.25 per top-up) so the execute path fires; CAMPAIGN_ESCALATE keeps
+          # the threshold ahead for the rest of the run. Escalation is disclosed
+          # as evidence tooling in the README/BUIDL.
+          HEALTH_FACTOR_THRESHOLD: "3000"
           CAMPAIGN_ESCALATE: "true"
           CHAIN_ID: "11155111"
         run: npm run campaign
