@@ -32,7 +32,7 @@
 >    against public RPCs — currently **1,082 verified, 0 reverted, 0 missing**.
 > 2. **None of the 91 refusals carries a transaction hash.** The simulate gate refused
 >    them *before* broadcast — zero gas spent on a doomed transaction, ever.
-> 3. **1,039 receipts carry the KeeperHub execution id** — the KeeperHub team can look
+> 3. **1,041 receipts carry the KeeperHub execution id** — the KeeperHub team can look
 >    any of them up directly.
 > 4. **The health factor moved 4.50 → 2,435 (541×) via real on-chain top-ups** — the
 >    before/after is in every receipt, recomputable from `receipts.json`.
@@ -46,7 +46,7 @@
 | **Simulation refusals (zero gas)** | **91** — reverts caught before broadcast |
 | **Stand-downs logged** | **147** — healthy positions left untouched |
 | **Health factor raised** | **4.50 → 2,435** by real protective top-ups |
-| **Execution IDs exposed** | 1,039 receipts carry the KeeperHub execution id |
+| **Execution IDs exposed** | 1,041 receipts carry the KeeperHub execution id |
 | **Regressions** | **0** |
 
 <p align="center">
