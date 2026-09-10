@@ -453,7 +453,7 @@ function HeroPage() {
             style={{ animationDelay: '1.15s' }}
           >
             <span className="text-white/60 text-xs tracking-wide">
-              1,080 on-chain transactions · 91 refusals · 147 stand-downs
+              1,082 on-chain transactions · 91 refusals · 147 stand-downs
             </span>
             <a
               href="#/audit"
