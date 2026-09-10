@@ -171,7 +171,7 @@ the site and rendered as a paginated, filterable table.
 - **Protective top-ups executed on-chain:** 1,082 — health factor raised from **4.50 to 2,435** across the corpus
 - **Simulation refusals (zero gas):** 91 — allowance exhaustion, balance exhaustion and a full reserve cap, all caught before broadcast (playbook in [WHAT-BREAKS.md](harness/docs/WHAT-BREAKS.md))
 - **Stand-downs logged:** 147 — healthy positions correctly left untouched
-- **Receipts carrying the KeeperHub execution id:** 1,039 — the KeeperHub team can look any of these up directly in their system
+- **Receipts carrying the KeeperHub execution id:** 1,041 — the KeeperHub team can look any of these up directly in their system
 - **Regressions:** 0
 
 ### The spread is the point
