@@ -15,7 +15,7 @@
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg">
   <img alt="Network: Ethereum Sepolia" src="https://img.shields.io/badge/network-Sepolia-6b5b95.svg">
   <img alt="Status: live" src="https://img.shields.io/badge/status-live-success.svg">
-  <img alt="Transactions" src="https://img.shields.io/badge/transactions-1%2C055%20verified-green.svg">
+  <img alt="Transactions" src="https://img.shields.io/badge/transactions-1%2C080%20verified-green.svg">
   <img alt="Tests" src="https://img.shields.io/badge/tests-58%20passing-brightgreen.svg">
   <img alt="CI" src="https://github.com/thesithunyein/cordon/actions/workflows/ci.yml/badge.svg">
 </p>
@@ -23,6 +23,22 @@
 <p align="center">
   <b>Live audit stream:</b> <a href="https://cordon.sithunyein.com/#/audit">cordon.sithunyein.com/#/audit</a> — every decision, paginated
 </p>
+
+> **Falsifiable claims** — every one of these can be checked in one command, and CI
+> re-checks them on every push:
+>
+> 1. **Every one of the 1,080 executed transactions exists on Sepolia with `status: 0x1`.**
+>    `cd harness && node scripts/verify-receipts.mjs` re-verifies the whole corpus
+>    against public RPCs — currently **1,080 verified, 0 reverted, 0 missing**.
+> 2. **None of the 91 refusals carries a transaction hash.** The simulate gate refused
+>    them *before* broadcast — zero gas spent on a doomed transaction, ever.
+> 3. **1,039 receipts carry the KeeperHub execution id** — the KeeperHub team can look
+>    any of them up directly.
+> 4. **The health factor moved 4.50 → 2,435 (541×) via real on-chain top-ups** — the
+>    before/after is in every receipt, recomputable from `receipts.json`.
+> 5. **Zero regressions:** every refusal class and every stand-down decision is
+>    re-derived from the same corpus the site serves — the numbers on the site, in
+>    this README, and in `receipts.json` are the same numbers.
 
 | | |
 |---|---|
