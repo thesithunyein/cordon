@@ -31,7 +31,12 @@
 >    `cd harness && node scripts/verify-receipts.mjs` re-verifies the whole corpus
 >    against public RPCs — currently **1,082 verified, 0 reverted, 0 missing**.
 > 2. **None of the 91 refusals carries a transaction hash.** The simulate gate refused
->    them *before* broadcast — zero gas spent on a doomed transaction, ever.
+>    them *before* broadcast — zero gas spent on a doomed transaction, ever. `node
+>    scripts/refusal-audit.mjs` re-derives the full breakdown from the same corpus
+>    the site serves: **90 simulation-gate refusals** (reserve cap 51, balance
+>    exhaustion 27, allowance exhaustion 10, opaque revert 2) plus 1 honest
+>    transport failure, and the **doomed value the gate never put at risk:
+>    1,000,520 USDC + 185 LINK**.
 > 3. **1,041 receipts carry the KeeperHub execution id** — the KeeperHub team can look
 >    any of them up directly.
 > 4. **The health factor moved 4.50 → 2,435 (541×) via real on-chain top-ups** — the
@@ -44,6 +49,7 @@
 |---|---|
 | **On-chain executions through KeeperHub** | **1,082 verified** (Sepolia, `status: 0x1`) |
 | **Simulation refusals (zero gas)** | **91** — reverts caught before broadcast |
+| **Doomed value refused** | **1,000,520 USDC + 185 LINK** — the volume the gate declined to broadcast, re-derived by [`refusal-audit.mjs`](harness/scripts/refusal-audit.mjs) |
 | **Stand-downs logged** | **147** — healthy positions left untouched |
 | **Health factor raised** | **4.50 → 2,435** by real protective top-ups |
 | **Execution IDs exposed** | 1,041 receipts carry the KeeperHub execution id |
@@ -275,6 +281,7 @@ cordon/
 │   │   └── receipts.json       # every tx hash, status, gas — recomputable
 │   ├── scripts/
 │   │   ├── verify-receipts.mjs # verifies every receipt against a public RPC
+│   │   ├── refusal-audit.mjs   # re-derives refusal classes + doomed volume from the corpus
 │   │   ├── sync-public-evidence.mjs # copies receipts.json → public/ for the live audit stream
 │   │   ├── approve-reserve.ts  # ensure Pool allowance (simulate → execute)
 │   │   └── mint-reserve.ts     # mint testnet assets from the Aave faucet
@@ -353,6 +360,8 @@ You configure it once. Cordon protects 24/7.
 | Idempotency | unique `idempotency_key` per protective action; replays return the original execution |
 | Status polling | `get_direct_execution_status` with bounded backoff to terminal state |
 | Audit trail | every run's step logs exported with the receipt |
+
+Every refusal number above is re-derivable in one command: `node harness/scripts/refusal-audit.mjs`.
 
 ---
 
