@@ -36,3 +36,6 @@ harness/.env
 
 # Submission drafts stay local-only (pasted into BUIDL forms, not published)
 docs/submission/
+
+# Personal prep file — not part of the repo evidence
+CALL-SCRIPT.md
