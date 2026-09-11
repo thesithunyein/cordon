@@ -26,6 +26,8 @@ const baseConfig = {
   campaignRounds: 1,
   verifyReceipts: false,
   chainId: 11155111,
+  extraPositions: [],
+  positionLabels: {},
 }
 
 test('decide(): protect when at risk, stand-down when safe', () => {
@@ -157,4 +159,70 @@ test('detect(): passes the correct protocol action arguments', async () => {
   assert.equal((seen.args as any).actionType, 'aave-v3/get-user-account-data')
   assert.equal((seen.args as any).params.user, baseConfig.positionAddress)
   assert.equal((seen.args as any).params.network, '11155111')
+})
+test('forPosition(): overrides address and threshold without mutating the root guardian', async () => {
+  const g = new Guardian(new FakeKeeperHub({ healthFactor: '1000000000000000000' }) as never, {
+    ...baseConfig,
+    healthFactorThreshold: 1.2,
+    extraPositions: [{ address: '0x2222222222222222222222222222222222222222', threshold: 2.0 }],
+    positionLabels: { '0x2222222222222222222222222222222222222222': 'Secondary' },
+  })
+  const sub = g.forPosition({ address: '0x2222222222222222222222222222222222222222', threshold: 2.0 })
+
+  // sub guards the extra position at its own threshold: HF 1.0 < 2.0 → at risk
+  assert.equal(sub.label(), 'Secondary')
+  const snap = await sub.detect()
+  assert.equal(snap.atRisk, true)
+
+  // the root guardian still uses the primary threshold (1.2): HF 1.0 < 1.2 → also at risk,
+  // but the point is the ROOT did not inherit the sub's 2.0 escalation
+  const rootSnap = await g.detect()
+  assert.equal(rootSnap.atRisk, true)
+  assert.equal(
+    new Guardian(new FakeKeeperHub({ healthFactor: '1500000000000000000' }) as never, {
+      ...baseConfig,
+      healthFactorThreshold: 1.2,
+    }).decide(await new Guardian(new FakeKeeperHub({ healthFactor: '1500000000000000000' }) as never, {
+      ...baseConfig,
+      healthFactorThreshold: 1.2,
+    }).detect()),
+    'stand-down',
+  )
+})
+
+test('forPosition(): detect() reads the extra position address', async () => {
+  let seenUser = ''
+  class CaptureKH {
+    async callTool(_name: string, args: Record<string, unknown>) {
+      seenUser = (args.params as any).user
+      return { isError: false, text: '', data: { result: { healthFactor: '3000000000000000000' } } }
+    }
+  }
+  const g = new Guardian(new CaptureKH() as never, baseConfig)
+  const sub = g.forPosition({ address: '0x3333333333333333333333333333333333333333', threshold: 1.5 })
+  await sub.detect()
+  assert.equal(seenUser, '0x3333333333333333333333333333333333333333')
+  // root is untouched
+  assert.equal(baseConfig.positionAddress, '0x1111111111111111111111111111111111111111')
+})
+
+test('label(): falls back to short address when no label is configured', () => {
+  const g = new Guardian(new FakeKeeperHub({}) as never, baseConfig)
+  assert.equal(g.label(), '0x1111…1111')
+})
+
+test('label(): uses POSITION_LABELS when configured', () => {
+  const g = new Guardian(new FakeKeeperHub({}) as never, {
+    ...baseConfig,
+    positionLabels: { '0x1111111111111111111111111111111111111111': 'Main vault' },
+  })
+  assert.equal(g.label(), 'Main vault')
+})
+
+test('setThreshold(): escalation mutates only this guardian instance', () => {
+  const g = new Guardian(new FakeKeeperHub({}) as never, baseConfig)
+  g.setThreshold(3.5)
+  assert.equal(g.decide(snapshot('2000000000000000000', Number('2000000000000000000') / 1e18 < 3.5)), 'protect')
+  const fresh = new Guardian(new FakeKeeperHub({}) as never, baseConfig)
+  assert.equal(fresh.decide(snapshot('2000000000000000000', false)), 'stand-down')
 })

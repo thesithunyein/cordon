@@ -41,6 +41,33 @@ export class Guardian {
     private readonly config: CordonConfig,
   ) {}
 
+  /**
+   * Resolve the position for a cycle. Multi-position watchlist: pass a
+   * {address, threshold} to override the primary position + threshold for
+   * this Guardian instance's reads/decisions. Omitted = primary position,
+   * exactly the pre-multi behavior.
+   */
+  forPosition(p: { address: string; threshold: number }): Guardian {
+    return new Guardian(this.kh, {
+      ...this.config,
+      positionAddress: p.address,
+      healthFactorThreshold: p.threshold,
+    })
+  }
+
+  /** Label for the watched position (POSITION_LABELS), falling back to a short address. */
+  label(): string {
+    return (
+      this.config.positionLabels[this.config.positionAddress.toLowerCase()] ??
+      `${this.config.positionAddress.slice(0, 6)}…${this.config.positionAddress.slice(-4)}`
+    )
+  }
+
+  /** Adjust this Guardian's protective threshold (campaign escalation). */
+  setThreshold(t: number): void {
+    this.config.healthFactorThreshold = t
+  }
+
   /** Read account health from the Aave V3 Sepolia Pool (native plugin action). */
   async detect(): Promise<HealthSnapshot> {
     const r = await this.kh.callTool('execute_protocol_action', {

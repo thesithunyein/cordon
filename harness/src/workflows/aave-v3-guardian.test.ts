@@ -11,6 +11,8 @@ const config = {
   campaignRounds: 10,
   verifyReceipts: true,
   chainId: 11155111,
+  extraPositions: [],
+  positionLabels: {},
 }
 
 const wf = buildGuardianWorkflow(config)

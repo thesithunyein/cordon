@@ -27,15 +27,16 @@
 > **Falsifiable claims** — every one of these can be checked in one command, and CI
 > re-checks them on every push:
 >
-> 1. **Every one of the 1,084 executed transactions exists on Sepolia with `status: 0x1`.**
+> 1. **Every one of the 1,096 executed transactions exists on Sepolia with `status: 0x1`.**
 >    `cd harness && node scripts/verify-receipts.mjs` re-verifies the whole corpus
->    against public RPCs — currently **1,084 verified, 0 reverted, 0 missing**.
-> 2. **None of the 91 refusals carries a transaction hash.** The simulate gate refused
+>    against public RPCs — currently **1,096 verified, 0 reverted, 0 missing**.
+> 2. **None of the 98 refusals carries a transaction hash.** The simulate gate refused
 >    them *before* broadcast — zero gas spent on a doomed transaction, ever. `node
 >    scripts/refusal-audit.mjs` re-derives the full breakdown from the same corpus
->    the site serves: **90 simulation-gate refusals** (reserve cap 51, balance
->    exhaustion 27, allowance exhaustion 10, opaque revert 2) plus 1 honest
->    transport failure, and the **doomed value the gate never put at risk:
+>    the site serves: **97 simulation-gate refusals** (reserve cap 51, balance
+>    exhaustion 27, allowance exhaustion 10, opaque revert 3, plus 6 documented
+>    secondary-position provisioning failures — all refused before broadcast) plus 1
+>    honest transport failure, and the **doomed value the gate never put at risk:
 >    1,000,520 USDC + 185 LINK**.
 > 3. **1,043 receipts carry the KeeperHub execution id** — the KeeperHub team can look
 >    any of them up directly.
@@ -47,8 +48,8 @@
 
 | | |
 |---|---|
-| **On-chain executions through KeeperHub** | **1,084 verified** (Sepolia, `status: 0x1`) |
-| **Simulation refusals (zero gas)** | **91** — reverts caught before broadcast |
+| **On-chain executions through KeeperHub** | **1,096 verified** (Sepolia, `status: 0x1`) |
+| **Simulation refusals (zero gas)** | **98** — reverts caught before broadcast |
 | **Doomed value refused** | **1,000,520 USDC + 185 LINK** — the volume the gate declined to broadcast, re-derived by [`refusal-audit.mjs`](harness/scripts/refusal-audit.mjs) |
 | **Stand-downs logged** | **147** — healthy positions left untouched |
 | **Health factor raised** | **4.50 → 2,435** by real protective top-ups |
@@ -119,6 +120,13 @@ the protective action with simulation gating, idempotency, private routing, and 
 auditable record. That is the difference between *"your position might be at risk"* and
 *"your position is protected."*
 
+**Multi-position watchlist.** One Cordon instance watches N positions: `POSITION_ADDRESS`
+plus `EXTRA_POSITIONS` (comma-separated `address[:threshold]`), each with an optional
+label from `POSITION_LABELS`. Every guard cycle runs detect → decide → simulate →
+execute → verify per position, and every receipt carries the position's label. The live
+corpus already guards two positions (`Primary vault` HF ≈ 2,476; `Secondary vault`,
+collateral-only).
+
 **Why testnet, honestly.** The value that moves is Sepolia testnet value; the mechanics
 are the same mechanics — real Aave V3 contracts, real transactions, real hashes on a
 public explorer. Meld, 1st place in the previous KeeperHub hackathon, ran entirely on
@@ -172,10 +180,10 @@ is recomputable with `node harness/scripts/verify-receipts.mjs`. There is also a
 audit stream** at <https://cordon.sithunyein.com/#/audit> — the same corpus, served from
 the site and rendered as a paginated, filterable table.
 
-- **Transactions executed through KeeperHub:** 1,084
-- **Guard cycles recorded:** 1,322 (setup + protects + stand-downs + refusals)
-- **Protective top-ups executed on-chain:** 1,084 — health factor raised from **4.50 to 2,435** across the corpus
-- **Simulation refusals (zero gas):** 91 — allowance exhaustion, balance exhaustion and a full reserve cap, all caught before broadcast (playbook in [WHAT-BREAKS.md](harness/docs/WHAT-BREAKS.md))
+- **Transactions executed through KeeperHub:** 1,096
+- **Guard cycles recorded:** 1,343 (setup + protects + stand-downs + refusals)
+- **Protective top-ups executed on-chain:** 1,096 — health factor raised from **4.50 to 2,435** across the corpus
+- **Simulation refusals (zero gas):** 98 — allowance exhaustion, balance exhaustion, a full reserve cap, and documented provisioning failures, all caught before broadcast (playbook in [WHAT-BREAKS.md](harness/docs/WHAT-BREAKS.md))
 - **Stand-downs logged:** 147 — healthy positions correctly left untouched
 - **Receipts carrying the KeeperHub execution id:** 1,043 — the KeeperHub team can look any of these up directly in their system
 - **Regressions:** 0
@@ -184,7 +192,7 @@ the site and rendered as a paginated, filterable table.
 
 A single execution is a demonstration; hundreds that agree are evidence. Every
 executed receipt in the corpus carries the health factor before and after, and
-the 1,084 protections span a **541× health-factor range** — the guardian decided
+the 1,096 protections span a **541× health-factor range** — the guardian decided
 correctly at every risk level from **near-liquidation (HF 4.50, the threshold
 is 1.5)** to **ultra-safe (HF 2,400+)**. Mixed in are the decisions that prove
 restraint: **91 simulation refusals** (a doomed transaction never reached the
@@ -198,7 +206,7 @@ Every row below is sampled evenly across the corpus (regenerate with
 `node harness/scripts/evidence-table.mjs 20`). Click the tx to read it on
 Etherscan; the execution id is what the KeeperHub team can look up directly.
 
-Verified 2026-09-09 against a public Sepolia RPC: **1,084/1,084 receipts returned `status: 0x1`.**
+Verified 2026-09-09 against a public Sepolia RPC: **1,096/1,096 receipts returned `status: 0x1`.**
 
 The CI pipeline re-runs this verification on every push
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
@@ -235,7 +243,7 @@ The CI pipeline re-runs this verification on every push
 | 2178.48 → 2182.98 | [0x4bc40fec…](https://sepolia.etherscan.io/tx/0x4bc40fece564e0d6af66afa83767556d4571d1c7d12bcfa05078b6460dd9bce0) | `u9h9xuzaarcxaaf8o0v1i` |
 | 2297.72 → 2302.22 | [0x4159cd98…](https://sepolia.etherscan.io/tx/0x4159cd98132409b830fb25bfc455f5488d07a06b42ede01424b466909c9a19fb) | `7ojnixugey4h9gpvr7w7n` |
 
-All 1,084 hashes, with per-transaction gas and health-factor movement, are in
+All 1,096 hashes, with per-transaction gas and health-factor movement, are in
 [`harness/receipts/receipts.json`](harness/receipts/receipts.json) and visible live at
 <https://cordon.sithunyein.com/#/audit>.
 
@@ -388,10 +396,15 @@ See [SECURITY.md](SECURITY.md) for the full policy and how to report a vulnerabi
 - **Aave V3 plugin writes are mainnet-only**, so the guardian uses direct contract calls
   to the Aave V3 Sepolia Pool with our own ABI handling. If the plugin gains testnet
   support, this is a drop-in swap.
-- **Single protocol, single position** today. Multi-position watch lists are next.
+- **Aave V3 only**, across multiple positions. The watchlist guards N positions per
+  cycle (each with its own threshold and label); multi-protocol support is next.
+- **The secondary watchlist position is collateral-only** — the shared Sepolia
+  deployment's borrow path reverts (Panic(17)), so that position reads an effectively
+  infinite health factor and always stands down. Cordon watches and receipts it
+  regardless; a funded-debt variant is a config change, not a code change.
 - **No partial-collateral operations.** Protective actions are top-up (supply) or repay —
   deliberate simplicity over breadth.
-- **Threshold is static per workflow.** Per-position, per-asset thresholds are planned.
+- **Threshold is static per position.** Per-asset thresholds are planned.
 
 A candid answer here has never hurt a submission; pretending testnet is mainnet would.
 
@@ -401,7 +414,7 @@ A candid answer here has never hurt a submission; pretending testnet is mainnet 
 
 - [x] Live Aave V3 Sepolia integration through KeeperHub
 - [x] Detect → simulate → execute → verify loop, proven on-chain
-- [x] 1,084 executed receipts, all re-verified on-chain (CI-enforced)
+- [x] 1,096 executed receipts, all re-verified on-chain (CI-enforced)
 - [x] 58 unit + evidence-integrity tests, CI on every push
 - [x] Failure-drill suite (stand-down, simulate-refusal, 429-retry) — see [DRILLS.md](harness/docs/DRILLS.md)
 - [x] Workflow-as-code pushed + validated on KeeperHub (`create_workflow` MCP surface)

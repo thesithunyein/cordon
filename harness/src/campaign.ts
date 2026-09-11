@@ -15,7 +15,13 @@ import { appendReceipt, summary, type Receipt } from './receipts.js'
 async function main() {
   const config = loadConfig()
   const kh = new KeeperHubClient(config.khApiKey)
-  const guardian = new Guardian(kh, config)
+  const root = new Guardian(kh, config)
+
+  // Watchlist: primary first, then extras (same semantics as guard.ts).
+  const watchlist = [
+    { address: config.positionAddress, threshold: config.healthFactorThreshold },
+    ...config.extraPositions,
+  ]
 
   // Escalating mode: after each completed protective execution, raise the
   // threshold just above the verified health factor so the next round executes
@@ -23,15 +29,20 @@ async function main() {
   const escalate = process.env.CAMPAIGN_ESCALATE === 'true'
 
   const rounds = config.campaignRounds
-  console.log(`\nCordon — evidence campaign: ${rounds} rounds`)
-  console.log(`Position:  ${config.positionAddress}`)
-  console.log(`Threshold: health factor < ${config.healthFactorThreshold}${escalate ? ' (escalating)' : ''}\n`)
+  console.log(`\nCordon — evidence campaign: ${rounds} rounds x ${watchlist.length} position${watchlist.length === 1 ? '' : 's'}`)
+  for (const p of watchlist) {
+    const g = root.forPosition(p)
+    console.log(`  ${g.label()}  threshold ${p.threshold}`)
+  }
+  console.log(`Threshold base: health factor < ${config.healthFactorThreshold}${escalate ? ' (escalating)' : ''}\n`)
 
   let executed = 0
   let refused = 0
   let stoodDown = 0
 
   for (let i = 1; i <= rounds; i++) {
+  for (const p of watchlist) {
+    const guardian = root.forPosition(p)
     const nonce = `${Date.now().toString(36)}-${i}`
     try {
       const snapshot = await guardian.detect()
@@ -44,7 +55,8 @@ async function main() {
         await appendReceipt({
           type: 'campaign-execution',
           timestamp: new Date().toISOString(),
-          position: config.positionAddress,
+          position: p.address,
+          positionLabel: guardian.label(),
           healthFactorBefore: snapshot.healthFactor,
           healthFactorAfter: null,
           decision: 'stand-down',
@@ -72,13 +84,14 @@ async function main() {
         // read can lag one round behind the chain, so a small +0.5 margin lets
         // the threshold catch up with the rising HF and the run stalls. Use a
         // margin above the per-round gain so the threshold always stays ahead.
-        config.healthFactorThreshold = Number(after.healthFactor) / 1e18 + 2.6
-        console.log(`      → threshold escalated to ${config.healthFactorThreshold.toFixed(2)}`)
+        guardian.setThreshold(Number(after.healthFactor) / 1e18 + 2.6)
+        console.log(`      → threshold escalated to ${(Number(after.healthFactor) / 1e18 + 2.6).toFixed(2)}`)
       }
       const receipt: Receipt = {
         type: 'campaign-execution',
         timestamp: new Date().toISOString(),
-        position: config.positionAddress,
+        position: p.address,
+        positionLabel: guardian.label(),
         healthFactorBefore: snapshot.healthFactor,
         healthFactorAfter: after?.healthFactor ?? null,
         decision,
@@ -97,7 +110,8 @@ async function main() {
       await appendReceipt({
         type: 'campaign-execution',
         timestamp: new Date().toISOString(),
-        position: config.positionAddress,
+        position: p.address,
+        positionLabel: guardian.label(),
         healthFactorBefore: null,
         healthFactorAfter: null,
         decision: 'error',
@@ -106,6 +120,7 @@ async function main() {
         error: err.message,
       })
     }
+  }
   }
 
   const s = await summary()

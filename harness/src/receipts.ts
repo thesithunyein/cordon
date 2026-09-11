@@ -16,6 +16,8 @@ export interface Receipt {
   type: 'guard-cycle' | 'campaign-execution' | 'drill'
   timestamp: string
   position: string
+  /** Human label for the watched position (multi-position watchlist); absent on legacy rows. */
+  positionLabel?: string
   healthFactorBefore: string | null
   healthFactorAfter: string | null
   decision: string

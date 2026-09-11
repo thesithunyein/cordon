@@ -36,6 +36,11 @@ function classify(errorText) {
   if (/exceeds balance/i.test(e)) return 'balance-exhausted'
   if (/Error\(51\)/i.test(e)) return 'reserve-cap'
   if (/missing revert data/i.test(e)) return 'opaque-revert'
+  // Setup-time failures from the secondary-position provisioning (borrow
+  // attempts on a shared Sepolia deployment). The gate refused them all —
+  // same guarantee, different cause class. Documented in WHAT-BREAKS.md.
+  if (/Panic\(17\)/i.test(e)) return 'borrow-arith-overflow'
+  if (/missing argument|invalid address|not found in ABI/i.test(e)) return 'setup-encode-error'
   return null
 }
 
