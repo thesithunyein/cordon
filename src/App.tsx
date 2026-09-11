@@ -15,6 +15,7 @@ type Receipt = {
   type?: string
   timestamp?: string
   position?: string
+  positionLabel?: string
   healthFactorBefore?: string | number | null
   healthFactorAfter?: string | number | null
   decision?: string
@@ -254,6 +255,9 @@ function AuditPage() {
                           >
                             {x.refused ? 'REFUSED' : x.action ?? x.decision ?? x.status ?? '—'}
                           </span>
+                          {x.positionLabel && (
+                            <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/50">{x.positionLabel}</span>
+                          )}
                         </td>
                         <td className="px-4 py-2.5">
                           {x.txHash ? (
