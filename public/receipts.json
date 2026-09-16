@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-09-15T11:52:50.505Z",
-  "count": 1351,
+  "generatedAt": "2026-09-16T11:46:15.146Z",
+  "count": 1353,
   "receipts": [
     {
       "type": "campaign-execution",
@@ -20783,6 +20783,40 @@
       "refused": false,
       "txHash": "0x69b5d1cc531bf4ab2117f0853ed04af7a0a9a29777f320191e91f9a7926ad46c",
       "executionId": "k7inycvhn2ov8l96kyvyc",
+      "status": "completed",
+      "error": null
+    },
+    {
+      "type": "campaign-execution",
+      "timestamp": "2026-09-16T11:45:27.434Z",
+      "position": "0xf3F9aAbe2aC0Fd841DFfE116867ab76D2b582897",
+      "positionLabel": "0xf3F9…2897",
+      "healthFactorBefore": "2551134053484982395295",
+      "healthFactorAfter": "2553355483275562916519",
+      "decision": "protect",
+      "action": "top-up",
+      "asset": "LINK",
+      "amount": "5",
+      "refused": false,
+      "txHash": "0x0ca4e20d59c2425c764743363312cac7b4e0d7514090943dfa589dbc8ec381ca",
+      "executionId": "04yll7r5qi84h851rekfx",
+      "status": "completed",
+      "error": null
+    },
+    {
+      "type": "campaign-execution",
+      "timestamp": "2026-09-16T11:46:15.142Z",
+      "position": "0xf3F9aAbe2aC0Fd841DFfE116867ab76D2b582897",
+      "positionLabel": "0xf3F9…2897",
+      "healthFactorBefore": "2553355483275562916519",
+      "healthFactorAfter": "2555580274540528954495",
+      "decision": "protect",
+      "action": "top-up",
+      "asset": "LINK",
+      "amount": "5",
+      "refused": false,
+      "txHash": "0x1a5377a4ac5b6fb109a57d33d7ad5f06979f76a0a1d566c8a20bae4f28428eaf",
+      "executionId": "asakq45n9ozgag2r0dc3h",
       "status": "completed",
       "error": null
     }
