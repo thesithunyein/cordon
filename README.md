@@ -60,6 +60,7 @@
 
 | | |
 |---|---|
+| **Figures as of** | **2026-09-17** — the daily guard keeps executing after this snapshot, so the live audit stream may show slightly higher counts; [`npm run numbers`](harness/scripts/evidence-counts.mjs) always prints the current truth |
 | **On-chain executions through KeeperHub** | **1,109 verified** (Sepolia, `status: 0x1`) |
 | **Simulation refusals (zero gas)** | **98** — reverts caught before broadcast |
 | **Doomed value refused** | **1,000,520 USDC + 185 LINK** — the volume the gate declined to broadcast, re-derived by [`refusal-audit.mjs`](harness/scripts/refusal-audit.mjs) |
@@ -191,7 +192,9 @@ All transaction hashes live in
 [`harness/receipts/receipts.json`](harness/receipts/receipts.json). Every figure below
 is recomputable with `node harness/scripts/verify-receipts.mjs`. There is also a **live
 audit stream** at <https://cordon.sithunyein.com/#/audit> — the same corpus, served from
-the site and rendered as a paginated, filterable table.
+the site and rendered as a paginated, filterable table. Figures below are the snapshot
+as of **2026-09-17**; the daily guard keeps adding receipts after it, and the live
+stream is the current truth.
 
 - **Transactions executed through KeeperHub:** 1,109
 - **Guard cycles recorded:** 1,356 (setup + protects + stand-downs + refusals + the rescue)
