@@ -349,7 +349,27 @@ function AuditPage() {
   )
 }
 
+/**
+ * The landing page's proof strip. Derived from the corpus by the evidence sync
+ * (harness/scripts/sync-public-evidence.mjs) rather than typed in here: it was
+ * hardcoded once and had gone stale at 1,082 / 91 / 147 against a corpus of
+ * 1,109 / 98 / 149, so the first screen a reviewer saw contradicted the README.
+ */
+const EVIDENCE_STATS_URL = '/evidence-stats.json'
+
+type EvidenceStats = { executions: number; refusals: number; standDowns: number }
+
 function HeroPage() {
+  const [stats, setStats] = useState<EvidenceStats | null>(null)
+
+  useEffect(() => {
+    fetch(EVIDENCE_STATS_URL)
+      .then((r) => r.json())
+      .then((d: EvidenceStats) => setStats(d))
+      // Render nothing rather than a stale number if the file is unavailable.
+      .catch(() => setStats(null))
+  }, [])
+
   return (
     <div className="min-h-screen w-full bg-black p-3 md:p-4 font-inter">
       <div className="w-full min-h-screen rounded-2xl flex flex-col overflow-hidden relative bg-black">
@@ -369,9 +389,6 @@ function HeroPage() {
           {/* Logo */}
           <div className="anim-stagger" style={{ animationDelay: '0.1s' }}>
             <CordonLogo />
-            <span className="text-white text-sm md:text-base tracking-normal mt-2 block font-light">
-              CORDON
-            </span>
           </div>
 
           {/* Nav Buttons */}
@@ -482,9 +499,12 @@ function HeroPage() {
             className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 mt-4 md:mt-5 anim-stagger"
             style={{ animationDelay: '1.15s' }}
           >
-            <span className="text-white/60 text-xs tracking-wide">
-              1,082 on-chain transactions · 91 refusals · 147 stand-downs
-            </span>
+            {stats && (
+              <span className="text-white/60 text-xs tracking-wide">
+                {stats.executions.toLocaleString('en-US')} on-chain transactions ·{' '}
+                {stats.refusals} refusals · {stats.standDowns} stand-downs
+              </span>
+            )}
             <a
               href="#/audit"
               className="text-white/60 text-xs underline decoration-white/20 hover:text-white transition-colors"
