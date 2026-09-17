@@ -39,6 +39,12 @@ const isStandDown = (x: Receipt) =>
   x.decision === 'stand-down' ||
   x.decision === 'stand_down'
 
+// A rescue defends a position Cordon does not own. It is the only receipt type
+// where value moved because a position was genuinely at risk, so it must not
+// render as an ordinary `repay` — which is what `action` would otherwise show.
+const isRescue = (x: Receipt) =>
+  x.type === 'rescue' || x.decision === 'rescue'
+
 function shortHash(h: string, n = 10) {
   if (!h) return '—'
   return `${h.slice(0, n)}…${h.slice(-4)}`
@@ -48,7 +54,9 @@ function AuditPage() {
   const [receipts, setReceipts] = useState<Receipt[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [page, setPage] = useState(1)
-  const [filter, setFilter] = useState<'all' | 'executed' | 'refused' | 'stand-down'>('all')
+  const [filter, setFilter] = useState<
+    'all' | 'executed' | 'refused' | 'stand-down' | 'rescue'
+  >('all')
 
   useEffect(() => {
     fetch('/receipts.json')
@@ -70,24 +78,35 @@ function AuditPage() {
     ).length
     const refused = receipts.filter((x) => x.refused === true).length
     const standDown = receipts.filter(isStandDown).length
-    return { total: receipts.length, executed, refused, standDown }
+    const rescue = receipts.filter(isRescue).length
+    return { total: receipts.length, executed, refused, standDown, rescue }
   }, [receipts])
+
+  // Newest first. The corpus is append-ordered, so rendering it as stored buries
+  // the most recent decision — including a third-party rescue — on the last of 55
+  // pages, which is the opposite of what a reader of an audit stream needs.
+  const ordered = useMemo(
+    () => (receipts ? [...receipts].reverse() : []),
+    [receipts]
+  )
 
   const filtered = useMemo(() => {
     if (!receipts) return []
     switch (filter) {
       case 'executed':
-        return receipts.filter(
+        return ordered.filter(
           (x) => x.status === 'completed' && !x.refused && x.txHash
         )
       case 'refused':
-        return receipts.filter((x) => x.refused === true)
+        return ordered.filter((x) => x.refused === true)
       case 'stand-down':
-        return receipts.filter(isStandDown)
+        return ordered.filter(isStandDown)
+      case 'rescue':
+        return ordered.filter(isRescue)
       default:
-        return receipts
+        return ordered
     }
-  }, [receipts, filter])
+  }, [receipts, ordered, filter])
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const safePage = Math.min(page, pageCount)
@@ -206,6 +225,7 @@ function AuditPage() {
               {filterBtn('executed', 'Executed', stats.executed)}
               {filterBtn('refused', 'Refused', stats.refused)}
               {filterBtn('stand-down', 'Stand-down', stats.standDown)}
+              {stats.rescue > 0 && filterBtn('rescue', 'Rescue', stats.rescue)}
             </div>
           )}
 
@@ -248,12 +268,18 @@ function AuditPage() {
                             className={`text-xs px-2 py-0.5 rounded ${
                               x.refused
                                 ? 'bg-amber-400/10 text-amber-300'
+                                : isRescue(x)
+                                ? 'bg-fuchsia-400/15 text-fuchsia-200'
                                 : isStandDown(x)
                                 ? 'bg-sky-400/10 text-sky-300'
                                 : 'bg-emerald-400/10 text-emerald-300'
                             }`}
                           >
-                            {x.refused ? 'REFUSED' : x.action ?? x.decision ?? x.status ?? '—'}
+                            {x.refused
+                              ? 'REFUSED'
+                              : isRescue(x)
+                              ? 'RESCUE'
+                              : x.action ?? x.decision ?? x.status ?? '—'}
                           </span>
                           {x.positionLabel && (
                             <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/50">{x.positionLabel}</span>
