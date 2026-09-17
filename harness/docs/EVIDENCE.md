@@ -61,11 +61,11 @@ A receipt records what happened, not the policy it happened under. Until
 stand-down depending on the policy, and the policy changed during the corpus.
 
 That is not a guess, it is in the data. Campaign rows protect at health factors
-up to 2,555 *and* stand down in clusters pinned at single health factors
+up to 2,572 *and* stand down in clusters pinned at single health factors
 (6.75, 9.00, 11.25, 90.00, 236.25, 348.85, 389.36, 398.35 — all on 2026-09-08,
 within seconds of each other). Under one fixed threshold that combination is
 impossible: a stand-down at HF 398 requires the threshold to be at or below 398,
-while a protect at HF 2,555 requires it to be above 2,555. The threshold moved.
+while a protect at HF 2,572 requires it to be above 2,572. The threshold moved.
 
 The campaign can move it deliberately — `campaign.ts` raises it above the
 verified health factor after each execution when `CAMPAIGN_ESCALATE=true`, whose
@@ -75,7 +75,7 @@ also that `Guardian.forPosition()` builds a fresh config object, so
 from the watchlist entry.
 
 **From 2026-09-17 every receipt written by `guard.ts`, `campaign.ts` and
-`rescue-external.ts` carries `threshold`.** The 1,343 earlier rows do not, and
+`rescue-external.ts` carries `threshold`.** The 1,353 earlier rows do not, and
 should be read as execution evidence only — never as evidence of a correct
 decision.
 
