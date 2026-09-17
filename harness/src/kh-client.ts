@@ -31,6 +31,22 @@ export interface SimulationResult {
   error?: string
 }
 
+/**
+ * One stage of the safe-write sequence, reported as it happens.
+ *
+ * The sequence is the product: simulate, gate, execute, poll. Surfacing each
+ * stage is what lets a caller show that a write was gated before it was
+ * broadcast, and which KeeperHub execution produced the transaction.
+ */
+export interface SafeWriteStep {
+  stage: 'simulate' | 'execute' | 'poll'
+  ok: boolean
+  executionId?: string
+  txHash?: string
+  status?: string
+  error?: string
+}
+
 export interface ExecutionStatus {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'simulated'
   transactionHash?: string
@@ -281,25 +297,48 @@ export class KeeperHubClient {
     }
   }
 
-  /** Full safe write via raw contract call: simulate → gate → execute → poll. */
+  /**
+   * Full safe write via raw contract call: simulate → gate → execute → poll.
+   *
+   * Returns the KeeperHub execution id alongside the hash, so a caller can record
+   * which execution produced the transaction — the id is what the KeeperHub team
+   * can look up in their own system, and without it a receipt only proves *a*
+   * wallet transacted. `onStep` reports each stage as it happens.
+   */
   async safeContractWrite(args: {
     chainId: string
     contractAddress: string
     functionName: string
     functionArgs: string
     idempotencyKey: string
-  }): Promise<{ txHash?: string; status: ExecutionStatus['status']; refused: boolean; error?: string }> {
+    onStep?: (step: SafeWriteStep) => void
+  }): Promise<{ txHash?: string; status: ExecutionStatus['status']; refused: boolean; error?: string; executionId?: string }> {
     const sim = await this.simulateContractCall(args)
     if (!sim.success || sim.wouldRevert) {
-      return { status: 'failed', refused: true, error: sim.error ?? 'simulation reverted' }
+      const error = sim.error ?? 'simulation reverted'
+      args.onStep?.({ stage: 'simulate', ok: false, error })
+      return { status: 'failed', refused: true, error }
     }
+    args.onStep?.({ stage: 'simulate', ok: true })
+
     const { executionId } = await this.executeContractCall(args)
+    args.onStep?.({ stage: 'execute', ok: true, executionId })
+
     const result = await this.pollExecution(executionId)
+    args.onStep?.({
+      stage: 'poll',
+      ok: result.status === 'completed',
+      executionId,
+      status: result.status,
+      txHash: result.transactionHash,
+      error: result.error,
+    })
     return {
       txHash: result.transactionHash,
       status: result.status,
       refused: false,
       error: result.error,
+      executionId,
     }
   }
 

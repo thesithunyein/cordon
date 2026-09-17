@@ -161,13 +161,24 @@ async function main() {
 
   // The safe write: simulate the exact calldata, gate on the result, then
   // execute with an idempotency key and poll to a terminal state. A refusal here
-  // means the simulation reverted and nothing was broadcast.
+  // means the simulation reverted and nothing was broadcast. Each stage is
+  // printed as it happens, so the order is visible and not merely asserted.
+  console.log('\nKeeperHub safe write — simulate → gate → execute → poll')
   const result = await kh.safeContractWrite({
     chainId: String(config.chainId),
     contractAddress: AAVE_V3_SEPOLIA.pool,
     functionName,
     functionArgs,
     idempotencyKey,
+    onStep: (step) => {
+      if (step.stage === 'simulate') {
+        console.log(step.ok ? '  1/3 simulate  no revert — nothing broadcast yet' : `  1/3 simulate  REVERTED — ${step.error}`)
+      } else if (step.stage === 'execute') {
+        console.log(`  2/3 execute   KeeperHub executionId ${step.executionId ?? '(none returned)'}`)
+      } else {
+        console.log(`  3/3 poll      ${step.status}${step.txHash ? `  ${step.txHash}` : ''}`)
+      }
+    },
   })
 
   let hfAfter: string | null = null
@@ -198,7 +209,7 @@ async function main() {
     amount: String(amount),
     refused: result.refused,
     txHash: result.txHash ?? null,
-    executionId: null,
+    executionId: result.executionId ?? null,
     status: result.status,
     error: result.error ?? null,
   }
@@ -213,6 +224,7 @@ async function main() {
 
   console.log(`\n${result.status === 'completed' ? 'RESCUED' : `Status: ${result.status}`}`)
   console.log(`HF ${hfBefore.toFixed(4)} → ${after.toFixed(4)} on ${target}`)
+  if (result.executionId) console.log(`KeeperHub executionId: ${result.executionId}`)
   if (result.txHash) console.log(`Tx: https://sepolia.etherscan.io/tx/${result.txHash}`)
   console.log(`Recorded in harness/receipts/receipts.json (protectedUser ${target}).`)
   console.log('This was a gift: the repaid funds are gone and the collateral is theirs.')

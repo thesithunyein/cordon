@@ -17,7 +17,8 @@
     "drill": "tsx scripts/drill.ts",
     "workflow:push": "tsx scripts/push-workflow.ts",
     "setup": "tsx scripts/setup.ts",
-    "verify": "node scripts/verify-receipts.mjs"
+    "verify": "node scripts/verify-receipts.mjs",
+    "numbers": "node scripts/evidence-counts.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -237,7 +237,8 @@ async function main() {
     console.log(`  HF ${best.healthFactor.toFixed(4)} | collateral $${fmtUsd(best.collateralUsd)} | debt $${fmtUsd(best.debtUsd)}`)
     console.log(`  To reach HF ${TARGET_HF}: repay $${fmtUsd(best.repayToTargetUsd)} of debt, or supply $${fmtUsd(best.supplyToTargetUsd)} of collateral.`)
     console.log('  Both are gifts to the receiver and cannot be taken back.')
-    console.log('  Run `npm run rescue` to defend it through KeeperHub.')
+    console.log(`\n  Defend it through KeeperHub (preview first, then drop --preview):`)
+    console.log(`    RESCUE_TARGET=${best.address} npm run rescue -- --preview`)
   }
   console.log('')
 }
