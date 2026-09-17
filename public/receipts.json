@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-09-16T11:46:15.146Z",
-  "count": 1353,
+  "generatedAt": "2026-09-17T10:53:27.930Z",
+  "count": 1354,
   "receipts": [
     {
       "type": "campaign-execution",
@@ -20817,6 +20817,32 @@
       "refused": false,
       "txHash": "0x1a5377a4ac5b6fb109a57d33d7ad5f06979f76a0a1d566c8a20bae4f28428eaf",
       "executionId": "asakq45n9ozgag2r0dc3h",
+      "status": "completed",
+      "error": null
+    },
+    {
+      "type": "rescue",
+      "timestamp": "2026-09-17T10:53:27.925Z",
+      "position": "0xabea4e27232e0e546a57219ad5b1c52cde365d2d",
+      "positionLabel": "external",
+      "protectedUser": "0xabea4e27232e0e546a57219ad5b1c52cde365d2d",
+      "external": true,
+      "threshold": 1.5,
+      "selection": {
+        "method": "auto",
+        "considered": 34,
+        "chosenHf": 1.0047596517494055,
+        "note": "HF 1.0048 is the lowest actionable position; 637 accounts with debt scanned over 30000 blocks, 0 skipped by the selection guards"
+      },
+      "healthFactorBefore": "1004759651749405625",
+      "healthFactorAfter": "1999998196299996813",
+      "decision": "rescue",
+      "action": "repay",
+      "asset": "USDC",
+      "amount": "26.420222",
+      "refused": false,
+      "txHash": "0xb062b8d01f3d436d3677f8c0270558302c3564225ee29a3a11b781f299a80263",
+      "executionId": "clnydj468ihzjh0s15ihk",
       "status": "completed",
       "error": null
     }
