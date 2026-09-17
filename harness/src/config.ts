@@ -1,12 +1,20 @@
 /**
  * Cordon — configuration.
- * All values come from environment variables (see .env.example).
+ *
+ * Values come from the environment, with `harness/.env` filling in anything the
+ * process was not given. The side-effect import has to come first: it is what
+ * makes `cp .env.example .env` work as documented, and importing it here means
+ * it has already run before any consumer reads a variable at import time.
  */
+
+import './env.js'
 
 function required(name: string): string {
   const v = process.env[name]
   if (!v || v.length === 0) {
-    throw new Error(`Missing required env var: ${name}. Copy harness/.env.example to harness/.env and fill it in.`)
+    throw new Error(
+      `Missing required env var: ${name}. Put it in harness/.env (copy .env.example) or export it.`,
+    )
   }
   return v
 }

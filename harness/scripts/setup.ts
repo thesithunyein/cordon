@@ -49,7 +49,14 @@ async function main() {
     console.error('    Check KH_API_KEY in harness/.env (Settings → Developer → API keys)')
     process.exit(1)
   }
-  const hf = Number((snapshot.data?.result ?? snapshot.data)?.healthFactor ?? 0) / 1e18
+  // `data.result` is `unknown` by contract (the MCP envelope varies per tool), so
+  // narrow it once here rather than reaching through it at the property access.
+  const payload: unknown = snapshot.data?.result ?? snapshot.data
+  const healthFactor =
+    payload !== null && typeof payload === 'object' && 'healthFactor' in payload
+      ? (payload as { healthFactor?: string | number }).healthFactor
+      : undefined
+  const hf = Number(healthFactor ?? 0) / 1e18
   console.log(`  ✓ live read OK — health factor ${hf.toFixed(2)}`)
 
   console.log('\nSetup complete. Next: npm run guard (one cycle) or npm run campaign.')

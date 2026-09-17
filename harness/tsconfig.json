@@ -10,5 +10,9 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src"]
+  // `scripts` is included deliberately. It was excluded while the scripts were
+  // thin, but they now hold the same logic the src modules do — discovery is
+  // shared between the finder and the rescue — and a wrong call there only
+  // surfaces at runtime, in the one place a user is watching the terminal.
+  "include": ["src", "scripts"]
 }

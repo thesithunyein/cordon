@@ -33,7 +33,10 @@
  *   EXCLUDE            optional comma-separated addresses to skip
  */
 
-import { discoverAtRisk } from '../src/discovery.js'
+// Side-effect import: the finder reads LOOKBACK_BLOCKS and friends straight from
+// the environment, so harness/.env has to be loaded before the first read.
+import '../src/env.js'
+import { discover } from '../src/discovery.js'
 import type { RiskClass } from '../src/position-math.js'
 
 function numberEnv(name: string, fallback: number): number {
@@ -51,7 +54,7 @@ async function main() {
   const asJson = process.argv.includes('--json')
 
   const lookbackBlocks = numberEnv('LOOKBACK_BLOCKS', 30_000)
-  const result = await discoverAtRisk({
+  const result = await discover({
     lookbackBlocks,
     hfThreshold: numberEnv('HF_THRESHOLD', 1.6),
     targetHf: numberEnv('TARGET_HF', 2.0),
