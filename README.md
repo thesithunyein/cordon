@@ -27,9 +27,9 @@
 > **Falsifiable claims** — every one of these can be checked in one command, and CI
 > re-checks them on every push:
 >
-> 1. **Every one of the 1,106 executed transactions exists on Sepolia with `status: 0x1`.**
+> 1. **Every one of the 1,107 executed transactions exists on Sepolia with `status: 0x1`.**
 >    `cd harness && node scripts/verify-receipts.mjs` re-verifies the whole corpus
->    against public RPCs — currently **1,106 verified, 0 reverted, 0 missing**.
+>    against public RPCs — currently **1,107 verified, 0 reverted, 0 missing**.
 > 2. **None of the 98 refusals carries a transaction hash.** The simulate gate refused
 >    them *before* broadcast — zero gas spent on a doomed transaction, ever. `node
 >    scripts/refusal-audit.mjs` re-derives the full breakdown from the same corpus
@@ -38,22 +38,29 @@
 >    secondary-position provisioning failures — all refused before broadcast) plus 1
 >    honest transport failure, and the **doomed value the gate never put at risk:
 >    1,000,520 USDC + 185 LINK**.
-> 3. **1,053 receipts carry the KeeperHub execution id** — the KeeperHub team can look
+> 3. **1,054 receipts carry the KeeperHub execution id** — the KeeperHub team can look
 >    any of them up directly.
-> 4. **The health factor moved 4.50 → 2,555.58 (568×) via real on-chain top-ups** — the
->    before/after is in every receipt, recomputable from `receipts.json`.
-> 5. **Zero regressions:** every refusal class and every stand-down decision is
+> 4. **Cordon has rescued a position it does not own.** On 2026-09-17 it ranked the
+>    live Sepolia market, found `0xabea4e27…` at **HF 1.0048** — one oracle tick from
+>    liquidation — and repaid **26.42 USDC** of a stranger's debt through KeeperHub
+>    (execution id `clnydj468ihzjh0s15ihk`). Their health factor is **1.999997** now,
+>    read back from the chain, and their debt went **$53.09 → $26.67**.
+> 5. **Every protective top-up raised the health factor, 4.50 → 2,555.58 across 1,107
+>    executions** — the before/after is in every receipt, recomputable from
+>    `receipts.json`.
+> 6. **Zero regressions:** every refusal class and every stand-down decision is
 >    re-derived from the same corpus the site serves — the numbers on the site, in
 >    this README, and in `receipts.json` are the same numbers.
 
 | | |
 |---|---|
-| **On-chain executions through KeeperHub** | **1,106 verified** (Sepolia, `status: 0x1`) |
+| **On-chain executions through KeeperHub** | **1,107 verified** (Sepolia, `status: 0x1`) |
 | **Simulation refusals (zero gas)** | **98** — reverts caught before broadcast |
 | **Doomed value refused** | **1,000,520 USDC + 185 LINK** — the volume the gate declined to broadcast, re-derived by [`refusal-audit.mjs`](harness/scripts/refusal-audit.mjs) |
-| **Stand-downs logged** | **147** — healthy positions left untouched |
+| **Stand-downs logged** | **149** — healthy positions left untouched |
 | **Health factor raised** | **4.50 → 2,555.58** by real protective top-ups |
-| **Execution IDs exposed** | 1,053 receipts carry the KeeperHub execution id |
+| **Third-party rescue** | **1** — `0xabea4e27…` lifted from HF **1.0048 → 2.0000** by repaying 26.42 USDC of debt Cordon did not owe |
+| **Execution IDs exposed** | 1,054 receipts carry the KeeperHub execution id |
 | **Regressions** | **0** |
 
 <p align="center">
@@ -180,12 +187,13 @@ is recomputable with `node harness/scripts/verify-receipts.mjs`. There is also a
 audit stream** at <https://cordon.sithunyein.com/#/audit> — the same corpus, served from
 the site and rendered as a paginated, filterable table.
 
-- **Transactions executed through KeeperHub:** 1,106
-- **Guard cycles recorded:** 1,353 (setup + protects + stand-downs + refusals)
+- **Transactions executed through KeeperHub:** 1,107
+- **Guard cycles recorded:** 1,354 (setup + protects + stand-downs + refusals + the rescue)
 - **Protective top-ups executed on-chain:** 1,106 — health factor raised from **4.50 to 2,555.58** across the corpus
+- **Third-party rescues executed on-chain:** 1 — `0xabea4e27…` repaid 26.42 USDC of debt Cordon did not owe, moving HF **1.0048 → 2.0000**
 - **Simulation refusals (zero gas):** 98 — allowance exhaustion, balance exhaustion, a full reserve cap, and documented provisioning failures, all caught before broadcast (playbook in [WHAT-BREAKS.md](harness/docs/WHAT-BREAKS.md))
-- **Stand-downs logged:** 147 — healthy positions correctly left untouched
-- **Receipts carrying the KeeperHub execution id:** 1,053 — the KeeperHub team can look any of these up directly in their system
+- **Stand-downs logged:** 149 — healthy positions correctly left untouched
+- **Receipts carrying the KeeperHub execution id:** 1,054 — the KeeperHub team can look any of these up directly in their system
 - **Regressions:** 0
 
 ### The spread, and what it does not prove
@@ -194,12 +202,13 @@ A single execution is a demonstration; hundreds that agree are evidence. Every
 executed receipt carries the health factor before and after, and the 1,106
 protections span a **568× health-factor range**.
 
-They are not rescues, and this page used to imply they were. **The health factor
-never fell below 4.50** against a threshold of **1.5**, so no execution in this
-corpus prevented a liquidation. What the spread proves is throughput, the
-simulation gate and the refusal path — not the thesis that Cordon saves a
-position that was actually in danger. Two further caveats, both re-derivable
-from `receipts.json`:
+They are not rescues, and this page used to imply they were. **No protective
+top-up in this corpus fired below HF 4.50** against a threshold of **1.5**, so the
+1,106 protections demonstrate throughput, the simulation gate and the refusal
+path — not the thesis that Cordon saves a position that was actually in danger.
+That thesis has exactly one receipt so far, and it is not one of these: the
+third-party rescue above is the only row where value moved because a position was
+at the edge. Two further caveats, both re-derivable from `receipts.json`:
 
 - **The threshold in force was never recorded**, and it moved during the corpus.
   Campaign rows both protect *and* stand down across overlapping health factors
@@ -224,13 +233,14 @@ Every row below is sampled evenly across the corpus (regenerate with
 Etherscan; the execution id is what the KeeperHub team can look up directly.
 
 Verified against a public Sepolia RPC, and re-run by CI on every push:
-**1,106/1,106 receipts returned `status: 0x1`, 0 reverted, 0 missing.**
+**1,107/1,107 receipts returned `status: 0x1`, 0 reverted, 0 missing.**
 
 The CI pipeline re-runs this verification on every push
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
 | What | Tx |
 |---|---|
+| **Third-party rescue (HF 1.0048 → 2.0000, repaying 26.42 USDC of someone else's debt)** | [`0xb062…80263`](https://sepolia.etherscan.io/tx/0xb062b8d01f3d436d3677f8c0270558302c3564225ee29a3a11b781f299a80263) |
 | Protective top-up (HF 4.50 → 6.75, first) | [`0x0b0e…85b33`](https://sepolia.etherscan.io/tx/0x0b0e39e95d0e5cdba8a1e8625cd307cce0cde92ea67bb2f5d47a3919fce85b33) |
 | Protective top-up (HF 6.75 → 9.00) | [`0x02e1…4669e`](https://sepolia.etherscan.io/tx/0x02e15edfed880f7c27a8fda9bbae600db9c3137c6ea757fe39c3aded73e4669e) |
 | Collateral supply (LINK) | [`0x9c8f…09f4`](https://sepolia.etherscan.io/tx/0x9c8f4d476c074337b59a0d86ba05fa88840061748a6e0dd373c9a43788cf09f4) |
@@ -261,7 +271,7 @@ The CI pipeline re-runs this verification on every push
 | 2178.48 → 2182.98 | [0x4bc40fec…](https://sepolia.etherscan.io/tx/0x4bc40fece564e0d6af66afa83767556d4571d1c7d12bcfa05078b6460dd9bce0) | `u9h9xuzaarcxaaf8o0v1i` |
 | 2297.72 → 2302.22 | [0x4159cd98…](https://sepolia.etherscan.io/tx/0x4159cd98132409b830fb25bfc455f5488d07a06b42ede01424b466909c9a19fb) | `7ojnixugey4h9gpvr7w7n` |
 
-All 1,106 hashes, with per-transaction gas and health-factor movement, are in
+All 1,107 hashes, with per-transaction gas and health-factor movement, are in
 [`harness/receipts/receipts.json`](harness/receipts/receipts.json) and visible live at
 <https://cordon.sithunyein.com/#/audit>.
 
@@ -465,7 +475,7 @@ A candid answer here has never hurt a submission; pretending testnet is mainnet 
 
 - [x] Live Aave V3 Sepolia integration through KeeperHub
 - [x] Detect → simulate → execute → verify loop, proven on-chain
-- [x] 1,106 executed receipts, all re-verified on-chain (CI-enforced)
+- [x] 1,107 executed receipts, all re-verified on-chain (CI-enforced)
 - [x] 75 unit + evidence-integrity tests, CI on every push
 - [x] Failure-drill suite (stand-down, simulate-refusal, 429-retry) — see [DRILLS.md](harness/docs/DRILLS.md)
 - [x] Workflow-as-code pushed + validated on KeeperHub (`create_workflow` MCP surface)
