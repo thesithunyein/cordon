@@ -14,7 +14,25 @@ afterEach(() => {
   }
 })
 
+/**
+ * Config keys the loader reads. Cleared at the start of every test so the suite
+ * is hermetic: `config.ts` imports the `.env` loader, so a developer who follows
+ * the README's `cp .env.example .env` (which sets RESERVE=LINK) would otherwise
+ * fail here on `reserve === 'USDC'` while CI — which has no `.env` — passed.
+ */
+const OPTIONAL_KEYS = [
+  'HEALTH_FACTOR_THRESHOLD',
+  'RESERVE',
+  'TOP_UP_AMOUNT',
+  'CAMPAIGN_ROUNDS',
+  'VERIFY_RECEIPTS',
+  'CHAIN_ID',
+  'EXTRA_POSITIONS',
+  'POSITION_LABELS',
+]
+
 function setEnv(overrides: Record<string, string>) {
+  for (const k of OPTIONAL_KEYS) delete process.env[k]
   process.env.KH_API_KEY = 'kh_test'
   process.env.POSITION_ADDRESS = '0x1111111111111111111111111111111111111111'
   for (const [k, v] of Object.entries(overrides)) process.env[k] = v
