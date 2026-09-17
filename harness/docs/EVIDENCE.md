@@ -52,3 +52,52 @@ npm run campaign            # runs CAMPAIGN_ROUNDS cycles, appends receipts
 
 The campaign is resumable: it appends after every round, so an interrupted
 run loses nothing.
+
+## The threshold, and why older receipts cannot be re-judged
+
+A receipt records what happened, not the policy it happened under. Until
+2026-09-17 no receipt carried the threshold in force, which makes a historical
+`protect`/`stand-down` unverifiable: the same health factor is a protect or a
+stand-down depending on the policy, and the policy changed during the corpus.
+
+That is not a guess, it is in the data. Campaign rows protect at health factors
+up to 2,555 *and* stand down in clusters pinned at single health factors
+(6.75, 9.00, 11.25, 90.00, 236.25, 348.85, 389.36, 398.35 — all on 2026-09-08,
+within seconds of each other). Under one fixed threshold that combination is
+impossible: a stand-down at HF 398 requires the threshold to be at or below 398,
+while a protect at HF 2,555 requires it to be above 2,555. The threshold moved.
+
+The campaign can move it deliberately — `campaign.ts` raises it above the
+verified health factor after each execution when `CAMPAIGN_ESCALATE=true`, whose
+whole purpose is to make the next round execute again (§ `.env.example`). Note
+also that `Guardian.forPosition()` builds a fresh config object, so
+`setThreshold()` only affects the current round; persistence across rounds comes
+from the watchlist entry.
+
+**From 2026-09-17 every receipt written by `guard.ts`, `campaign.ts` and
+`rescue-external.ts` carries `threshold`.** The 1,343 earlier rows do not, and
+should be read as execution evidence only — never as evidence of a correct
+decision.
+
+## Third-party rescues
+
+`scripts/find-at-risk.ts` ranks live Aave V3 Sepolia positions by health factor
+(pure JSON-RPC, no KeeperHub key) and `scripts/rescue-external.ts` defends one
+through the same safe write as the guardian. Receipts from that path carry:
+
+| Field | Meaning |
+|---|---|
+| `type: rescue` | a third-party rescue, not a guard cycle |
+| `external: true` | the defended position is not ours |
+| `protectedUser` | the `onBehalfOf` account the write credited |
+| `threshold` | the policy in force for the decision |
+
+A rescue is a gift: `supply` mints the receiver the aToken, `repay` spends our
+funds against their debt, and neither is reversible. A rescue that would revert
+is recorded as `refused: true` with no `txHash`, exactly like a guardian refusal.
+
+```bash
+cd harness
+npm run find:at-risk                     # no credentials needed
+RESCUE_TARGET=0x… npm run rescue -- --preview
+```

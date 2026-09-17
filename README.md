@@ -188,17 +188,32 @@ the site and rendered as a paginated, filterable table.
 - **Receipts carrying the KeeperHub execution id:** 1,043 — the KeeperHub team can look any of these up directly in their system
 - **Regressions:** 0
 
-### The spread is the point
+### The spread, and what it does not prove
 
 A single execution is a demonstration; hundreds that agree are evidence. Every
-executed receipt in the corpus carries the health factor before and after, and
-the 1,096 protections span a **541× health-factor range** — the guardian decided
-correctly at every risk level from **near-liquidation (HF 4.50, the threshold
-is 1.5)** to **ultra-safe (HF 2,400+)**. Mixed in are the decisions that prove
-restraint: **91 simulation refusals** (a doomed transaction never reached the
-chain, five distinct revert conditions) and **147 stand-downs** (a healthy
-position was never touched). Detection, refusal, and restraint all verified
-on-chain — that is the reliability claim, in receipts rather than prose.
+executed receipt carries the health factor before and after, and the 1,096
+protections span a **541× health-factor range**.
+
+They are not rescues, and this page used to imply they were. **The health factor
+never fell below 4.50** against a threshold of **1.5**, so no execution in this
+corpus prevented a liquidation. What the spread proves is throughput, the
+simulation gate and the refusal path — not the thesis that Cordon saves a
+position that was actually in danger. Two further caveats, both re-derivable
+from `receipts.json`:
+
+- **The threshold in force was never recorded**, and it moved during the corpus.
+  Campaign rows both protect *and* stand down across overlapping health factors
+  (protects up to HF 2,555; stand-down clusters pinned at HF 6.75–398). With no
+  per-cycle threshold, no historical row can be re-judged against a policy.
+  Rows written from here on carry `threshold`; the older 1,343 cannot.
+- **The campaign can escalate its own threshold** so the next round executes
+  again (`.env.example`: `CAMPAIGN_ESCALATE`). Volume produced that way is
+  evidence of the execution path, not of detection.
+
+The reliability evidence is elsewhere, and it does hold: **98 refusals at the
+simulation gate** (91 protective cycles + 7 provisioning cycles, zero gas spent,
+five distinct revert classes) and **149 stand-downs**, every hash independently
+verifiable. Methodology in `harness/docs/EVIDENCE.md`.
 
 ### Verify any execution yourself
 
@@ -389,6 +404,23 @@ See [SECURITY.md](SECURITY.md) for the full policy and how to report a vulnerabi
 
 ---
 
+### Defending a position Cordon does not own
+
+`supply` and `repay` both take an `onBehalfOf`, so Cordon can defend a position
+whose owner is asleep — no signature from the protected account is required:
+
+```bash
+npm run find:at-risk                     # rank real Sepolia positions by health factor
+RESCUE_TARGET=0x… npm run rescue         # defend one through simulate → execute → verify
+```
+
+A rescue goes through the same safe write as the guardian: simulate the exact
+calldata, gate on the result, execute with an idempotency key, then re-read the
+health factor from the chain. **A rescue is a gift** — repaid funds are gone and
+supplied aTokens belong to the receiver — so the script says so before it spends
+anything, receipts mark the row `external: true` with the `protectedUser`, and a
+rescue that would revert lands as a refusal instead of a transaction.
+
 ## What still breaks
 
 - **Testnet only.** Value moved is Sepolia testnet value; mainnet is the documented next
@@ -415,7 +447,7 @@ A candid answer here has never hurt a submission; pretending testnet is mainnet 
 - [x] Live Aave V3 Sepolia integration through KeeperHub
 - [x] Detect → simulate → execute → verify loop, proven on-chain
 - [x] 1,096 executed receipts, all re-verified on-chain (CI-enforced)
-- [x] 58 unit + evidence-integrity tests, CI on every push
+- [x] 75 unit + evidence-integrity tests, CI on every push
 - [x] Failure-drill suite (stand-down, simulate-refusal, 429-retry) — see [DRILLS.md](harness/docs/DRILLS.md)
 - [x] Workflow-as-code pushed + validated on KeeperHub (`create_workflow` MCP surface)
 - [x] Live audit stream (receipts.json served + paginated on the site)
