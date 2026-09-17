@@ -2,8 +2,12 @@
 
 Cordon exists in two forms that run the same protect loop:
 
-1. **The CLI guardian** (`src/guardian.ts` + `npm run guard`) — what produced the
-   505-execution evidence corpus in `receipts.json`.
+1. **The CLI guardian** (`src/guardian.ts`) — what produced the evidence corpus in
+   `receipts.json`. By receipt type it is `npm run campaign` that dominates (1,322
+   `campaign-execution` rows) and `npm run guard` that produces the single-cycle
+   `guard-cycle` rows; both drive the same `Guardian` class, which is why this doc
+   can describe one protect loop rather than two. Counts as of 2026-09-17, and
+   regenerable with `npm run numbers`.
 2. **A KeeperHub platform workflow** — the same loop expressed as a versioned,
    platform-executed workflow, built from code and pushed through the MCP
    server's `create_workflow` surface.

@@ -397,7 +397,7 @@ You configure it once. Cordon protects 24/7.
 
 | Surface | How |
 |---|---|
-| MCP server | `execute_protocol_action`, `create_workflow`, `execute_workflow`, `get_execution` over `https://app.keeperhub.com/mcp` |
+| MCP server | `execute_protocol_action`, `execute_contract_call`, `get_direct_execution_status`, `create_workflow`, `validate_workflow` over `https://app.keeperhub.com/mcp` — every one of these is a `callTool` in `src/kh-client.ts` or `scripts/push-workflow.ts`, so it can be grepped |
 | Workflow-as-code | Guardian workflow built from `src/workflows/`, pushed + platform-validated (`valid: true`), snapshot in `harness/workflows/guardian.platform.json` — see [WORKFLOW-AS-CODE.md](harness/docs/WORKFLOW-AS-CODE.md) |
 | Protocol actions | `aave-v3/get-user-account-data`, `aave-v3/supply` — native Aave V3 plugin, live-validated on Sepolia |
 | Simulation | `simulate: true` preflight — gate on `success && !wouldRevert` before any broadcast |
