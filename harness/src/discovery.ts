@@ -35,7 +35,11 @@ export interface DiscoverOptions {
   minCollateralUsd?: number
   /** Parallel `eth_call`s. Public nodes rate-limit aggressively. */
   concurrency?: number
-  /** Initial `eth_getLogs` window; halved on retry when a node caps results. */
+  /**
+   * Initial `eth_getLogs` window; halved on retry when a node caps results.
+   * Kept deliberately small: a capped response is truncated rather than refused
+   * by most providers, so a large window under-covers without saying so.
+   */
   logChunkBlocks?: number
   /** Addresses to skip (our own position, known dust). */
   exclude?: string[]
@@ -65,6 +69,12 @@ export interface DiscoveryResult {
   minCollateralUsd: number
   /** Accounts named by recent Pool logs — the scan's input, before reading. */
   candidates: string[]
+  /**
+   * How the log scan went. Discovery is only as trustworthy as its coverage, and
+   * a node that caps result sets returns fewer logs rather than an error — so the
+   * scan reports what it actually did instead of leaving it invisible.
+   */
+  logScan: LogScanStats
   /** Candidates that carry debt (all risk classes, including dust). */
   rows: CandidateRow[]
   /** Actionable subset: HF below the sizing target with real collateral. */
@@ -89,17 +99,43 @@ function positive(value: number | undefined, fallback: number): number {
  * logs with 2 carry one (ReserveDataUpdated) and only ever name a reserve, so
  * they are skipped unless nothing else is available.
  */
+/** Log counts a node is likely to cap at rather than error on. */
+const SUSPECT_LOG_COUNTS = new Set([10_000, 5_000, 2_000, 1_000, 500, 100])
+
+export interface LogScanStats {
+  /** `eth_getLogs` windows requested. */
+  chunks: number
+  /** Windows a node refused and we retried with a halved range. */
+  retries: number
+  /** Smallest window that was needed to get a chunk through. */
+  smallestChunk: number
+  /** Most logs any single window returned — a round number here is a node cap. */
+  maxLogsInChunk: number
+  logs: number
+}
+
+export interface CandidateScan {
+  accounts: string[]
+  stats: LogScanStats
+}
+
 export async function collectCandidates(
   rpc: RpcClient,
   pool: string,
   fromBlock: number,
   toBlock: number,
-  initialChunk = 10_000,
-): Promise<string[]> {
+  initialChunk = 2_000,
+): Promise<CandidateScan> {
   const accountBearing = new Set<string>()
   const anyAddress = new Set<string>()
   let chunk = initialChunk
   let start = fromBlock
+  let chunks = 0
+  let retries = 0
+  let logCount = 0
+  let maxLogsInChunk = 0
+  let smallestChunk = initialChunk
+  let capHalvings = 0
 
   while (start <= toBlock) {
     const end = Math.min(start + chunk - 1, toBlock)
@@ -114,10 +150,29 @@ export async function collectCandidates(
       // Nodes cap the result set; halve the window and retry until it fits.
       if (chunk > 1) {
         chunk = Math.max(1, Math.floor(chunk / 2))
+        retries += 1
+        smallestChunk = Math.min(smallestChunk, chunk)
         continue
       }
       throw err
     }
+    chunks += 1
+
+    // A window returning a suspiciously round number of logs is far more likely
+    // to be a node's result cap than the shape of the market, and a truncated
+    // window silently costs us candidates — which is the one failure discovery
+    // cannot tolerate, since the ranking would then be built on partial input.
+    // Halve the window and rescan, a bounded number of times, before trusting it.
+    if (SUSPECT_LOG_COUNTS.has(logs.length) && chunk > 1 && capHalvings < 6) {
+      capHalvings += 1
+      retries += 1
+      chunk = Math.max(1, Math.floor(chunk / 2))
+      smallestChunk = Math.min(smallestChunk, chunk)
+      continue
+    }
+
+    logCount += logs.length
+    maxLogsInChunk = Math.max(maxLogsInChunk, logs.length)
 
     for (const log of logs) {
       const addresses: string[] = []
@@ -136,7 +191,10 @@ export async function collectCandidates(
     start = end + 1
   }
 
-  return [...(accountBearing.size > 0 ? accountBearing : anyAddress)]
+  return {
+    accounts: [...(accountBearing.size > 0 ? accountBearing : anyAddress)],
+    stats: { chunks, retries, smallestChunk, maxLogsInChunk, logs: logCount },
+  }
 }
 
 /** Read and score every candidate. Reuses the caller's RPC client. */
@@ -146,8 +204,8 @@ export async function discoverAtRisk(rpc: RpcClient, options: DiscoverOptions = 
   const hfThreshold = positive(options.hfThreshold, 1.6)
   const targetHf = positive(options.targetHf, 2.0)
   const minCollateralUsd = positive(options.minCollateralUsd, 25)
-  const concurrency = positive(options.concurrency, 6)
-  const chunk = positive(options.logChunkBlocks, 10_000)
+  const  concurrency = positive(options.concurrency, 6)
+  const chunk = positive(options.logChunkBlocks, 2_000)
 
   const excluded = new Set(
     (options.exclude ?? [])
@@ -157,9 +215,8 @@ export async function discoverAtRisk(rpc: RpcClient, options: DiscoverOptions = 
 
   const latestBlock = await rpc.blockNumber()
   const fromBlock = Math.max(0, latestBlock - lookbackBlocks)
-  const candidates = (await collectCandidates(rpc, pool, fromBlock, latestBlock, chunk)).filter(
-    (a) => !excluded.has(a.toLowerCase()),
-  )
+  const scan = await collectCandidates(rpc, pool, fromBlock, latestBlock, chunk)
+  const candidates = scan.accounts.filter((a) => !excluded.has(a.toLowerCase()))
 
   const accounts = await mapLimit(candidates, concurrency, async (address) => ({
     address,
@@ -196,6 +253,7 @@ export async function discoverAtRisk(rpc: RpcClient, options: DiscoverOptions = 
     targetHf,
     minCollateralUsd,
     candidates,
+    logScan: scan.stats,
     rows,
     worthDefending,
     counts: {
@@ -228,7 +286,16 @@ export async function discover(options: DiscoverOptions = {}): Promise<Discovery
  */
 export function pickRescueTarget(
   result: DiscoveryResult,
-  options: { minCollateralUsd?: number; maxHealthFactor?: number; maxRescueUsd?: number; strategy?: 'repay' | 'supply' } = {},
+  options: {
+    minCollateralUsd?: number
+    maxHealthFactor?: number
+    maxRescueUsd?: number
+    /**
+     * Which lever the cost ceiling is checked against. `cheapest` uses the smaller
+     * of the two, for the case where the caller will take whichever is cheaper.
+     */
+    strategy?: 'repay' | 'supply' | 'cheapest'
+  } = {},
 ): { target: CandidateRow | null; reason: string; skipped: { address: string; reason: string }[] } {
   const minCollateralUsd = positive(options.minCollateralUsd, result.minCollateralUsd)
   const maxHealthFactor = positive(options.maxHealthFactor, 1.6)
@@ -245,11 +312,16 @@ export function pickRescueTarget(
       skipped.push({ address: row.address, reason: `collateral $${row.collateralUsd.toFixed(2)} is below $${minCollateralUsd}` })
       continue
     }
-    const cost = strategy === 'repay' ? row.repayToTargetUsd : row.supplyToTargetUsd
+    const cost =
+      strategy === 'repay'
+        ? row.repayToTargetUsd
+        : strategy === 'supply'
+          ? row.supplyToTargetUsd
+          : Math.min(row.repayToTargetUsd, row.supplyToTargetUsd)
     if (cost > maxRescueUsd) {
       skipped.push({
         address: row.address,
-        reason: `${strategy} to target would cost $${cost.toFixed(2)}, above the $${maxRescueUsd} ceiling`,
+        reason: `the cheapest rescue would cost $${cost.toFixed(2)}, above the $${maxRescueUsd} ceiling`,
       })
       continue
     }

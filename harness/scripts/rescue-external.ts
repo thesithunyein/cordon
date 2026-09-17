@@ -41,7 +41,7 @@ import { loadConfig } from '../src/config.js'
 import { KeeperHubClient } from '../src/kh-client.js'
 import { discoverAtRisk, pickRescueTarget } from '../src/discovery.js'
 import { createRpc, debtsOf, mapLimit, readAccount, readPriceUsd, readTokenBalance, type RpcClient } from '../src/onchain.js'
-import { baseToUsd, healthFactorOf, hasDebt, sizeRescue } from '../src/position-math.js'
+import { baseToUsd, healthFactorOf, hasDebt, sizeRescue, type AccountData } from '../src/position-math.js'
 import { appendReceipt, type Receipt } from '../src/receipts.js'
 
 const TARGET_HF = numberEnv('TARGET_HF', 2.0)
@@ -57,6 +57,72 @@ function numberEnv(name: string, fallback: number): number {
 function ceilTo(value: number, decimals: number): number {
   const f = 10 ** decimals
   return Math.ceil(value * f) / f
+}
+
+/** One way to make a position safe, priced in the currency the treasury spends. */
+interface Lever {
+  mode: 'repay' | 'supply'
+  symbol: ReserveSymbol
+  costUsd: number
+  note: string
+}
+
+/**
+ * The cheapest way the treasury can make this position safe.
+ *
+ * Both levers remove the same risk and Aave charges nothing for either, so the
+ * choice is purely what it costs us. A repay is usually cheaper — it only has to
+ * cover the shortfall, while a supply has to lift the whole collateral base — but
+ * it can only be done in the asset the stranger actually borrowed. Whichever is
+ * affordable and cheaper is the one that gets spent, and the number is printed
+ * with its reason rather than asserted.
+ *
+ * This matters on Sepolia for a second reason: the treasury is funded in LINK and
+ * the guardian spends it on its own cycles, so repaying a stranger's stablecoin
+ * debt preserves the budget the evidence campaign depends on.
+ */
+async function planAutoLever(
+  rpc: RpcClient,
+  config: ReturnType<typeof loadConfig>,
+  target: string,
+  account: AccountData,
+  funder: string,
+): Promise<Lever | null> {
+  const sizing = sizeRescue(account, TARGET_HF)
+  const options: Lever[] = []
+
+  const free = async (symbol: ReserveSymbol): Promise<number> => {
+    const reserve = RESERVES[symbol]
+    const raw = await readTokenBalance(rpc, reserve.underlying, funder).catch(() => 0n)
+    return Number(raw) / 10 ** reserve.decimals
+  }
+
+  // Repays: only in a reserve the target actually owes, and never more than it.
+  for (const debt of await debtsOf(rpc, target)) {
+    const price = await readPriceUsd(rpc, debt.symbol)
+    if (!Number.isFinite(price) || price <= 0) continue
+    const usd = Math.min(sizing.repayUsd, debt.amount * price)
+    if (usd <= 0) continue
+    if ((await free(debt.symbol)) < usd / price) continue
+    options.push({ mode: 'repay', symbol: debt.symbol, costUsd: usd, note: `repay ${debt.symbol}, the asset actually owed` })
+  }
+
+  // Supplies: any reserve we hold free, since Aave credits the receiver.
+  for (const symbol of Object.keys(RESERVES) as ReserveSymbol[]) {
+    const price = await readPriceUsd(rpc, symbol)
+    if (!Number.isFinite(price) || price <= 0) continue
+    if (sizing.supplyUsd <= 0) continue
+    if ((await free(symbol)) < sizing.supplyUsd / price) continue
+    options.push({ mode: 'supply', symbol, costUsd: sizing.supplyUsd, note: `supply ${symbol} collateral` })
+  }
+
+  if (options.length === 0) {
+    console.log(`\nNo lever is fundable: ${funder} holds none of the ${Object.keys(RESERVES).join(', ')} needed.`)
+    return null
+  }
+
+  options.sort((a, b) => a.costUsd - b.costUsd || (a.mode === 'repay' ? -1 : 1))
+  return options[0]
 }
 
 /**
@@ -115,7 +181,7 @@ async function chooseSupplyReserve(rpc: RpcClient, config: ReturnType<typeof loa
 async function selectAutoTarget(
   rpc: RpcClient,
   config: ReturnType<typeof loadConfig>,
-  strategy: 'repay' | 'supply',
+  strategy: 'repay' | 'supply' | 'cheapest',
 ): Promise<{ address: string; selection: NonNullable<Receipt['selection']> }> {
   const minCollateralUsd = numberEnv('RESCUE_MIN_COLLATERAL_USD', 25)
   // Never chase a position that is not actually in danger: the point of a rescue
@@ -132,7 +198,12 @@ async function selectAutoTarget(
     concurrency: numberEnv('CONCURRENCY', 6),
     exclude: [config.positionAddress, ...(process.env.EXCLUDE ?? '').split(',')],
   })
+  const scan = found.logScan
   console.log(`Scanned:   ${found.candidates.length} accounts named by Pool logs over ${found.lookbackBlocks} blocks`)
+  console.log(
+    `Log scan:  ${scan.chunks} windows, ${scan.logs} logs, largest window returned ${scan.maxLogsInChunk}` +
+      (scan.retries > 0 ? ` — ${scan.retries} refused and halved to ${scan.smallestChunk} blocks` : ''),
+  )
   console.log(
     `Bearing debt: ${found.counts.withDebt} | at-risk: ${found.counts['at-risk']} | actionable: ${found.worthDefending.length}`,
   )
@@ -171,11 +242,15 @@ async function main() {
   // Auto mode defaults to `supply`. A repay must target the asset the stranger
   // actually borrowed, whereas supplying our own reserve works against any debt —
   // and the reserve is the asset the treasury is actually funded in.
-  const mode = (process.env.RESCUE_MODE ?? (auto ? 'supply' : 'repay')).toLowerCase()
+  let mode = (process.env.RESCUE_MODE ?? (auto ? 'supply' : 'repay')).toLowerCase()
   if (mode !== 'repay' && mode !== 'supply') throw new Error(`RESCUE_MODE must be repay or supply, got "${mode}"`)
 
   const config = loadConfig()
   const rpc = createRpc()
+  // The wallet KeeperHub executes from. Optional, but without it the tooling
+  // cannot tell which reserve is spendable, so it has to find out by reverting.
+  const funderAddress = (process.env.EXECUTION_WALLET ?? '').trim()
+  const funderKnown = /^0x[0-9a-fA-F]{40}$/.test(funderAddress)
 
   let target = (process.env.RESCUE_TARGET ?? '').trim()
   let selection: Receipt['selection'] = {
@@ -191,7 +266,7 @@ async function main() {
         'Set RESCUE_TARGET to the position to defend, or pass --auto to have Cordon find and rank one itself (see: npm run find:at-risk)',
       )
     }
-    const chosen = await selectAutoTarget(rpc, config, mode)
+    const chosen = await selectAutoTarget(rpc, config, 'cheapest')
     target = chosen.address
     selection = chosen.selection
   }
@@ -219,6 +294,14 @@ async function main() {
     return
   }
 
+  // Auto mode with a known wallet takes the cheapest lever the treasury can
+  // actually fund, which is not always the one the operator would have picked.
+  const plan = auto && !process.env.RESCUE_MODE && funderKnown ? await planAutoLever(rpc, config, target, account, funderAddress) : null
+  if (plan) {
+    mode = plan.mode
+    console.log(`Lever:     ${plan.note} — $${plan.costUsd.toFixed(2)}, the cheapest the treasury can fund`)
+  }
+
   // Which reserve, and how much. A repay has to target the reserve the target
   // actually borrowed — repaying the wrong one is a revert, not a rescue.
   let symbol: ReserveSymbol
@@ -226,7 +309,7 @@ async function main() {
   if (mode === 'repay') {
     const debts = await debtsOf(rpc, target)
     if (debts.length === 0) throw new Error(`${target} shows debt in the account data but no reserve carries it.`)
-    const requested = (process.env.RESCUE_RESERVE ?? '').trim().toUpperCase() as ReserveSymbol
+    const requested = (process.env.RESCUE_RESERVE ?? plan?.symbol ?? '').trim().toUpperCase() as ReserveSymbol
     const chosen = requested ? debts.find((d) => d.symbol === requested) : undefined
     if (requested && !chosen) {
       throw new Error(`${target} owes ${debts.map((d) => `${d.symbol} ${d.amount.toFixed(4)}`).join(', ')} — not ${requested}.`)
@@ -236,7 +319,7 @@ async function main() {
     owedInSymbol = selected.amount
     console.log(`Owes:      ${debts.map((d) => `${d.symbol} ${d.amount.toFixed(4)}`).join(', ')} → repaying ${symbol}`)
   } else {
-    symbol = await chooseSupplyReserve(rpc, config)
+    symbol = plan?.symbol ?? (await chooseSupplyReserve(rpc, config))
   }
 
   const reserve = RESERVES[symbol]
@@ -270,8 +353,7 @@ async function main() {
   // The treasury has to actually hold what we are about to spend. Checking here
   // names the shortfall; the simulation gate would otherwise refuse with a revert
   // string that never says which balance ran out.
-  const funderAddress = (process.env.EXECUTION_WALLET ?? '').trim()
-  if (/^0x[0-9a-fA-F]{40}$/.test(funderAddress)) {
+  if (funderKnown) {
     const free = Number(await readTokenBalance(rpc, reserve.underlying, funderAddress)) / 10 ** reserve.decimals
     console.log(`Treasury:  ${free} ${symbol} free in ${funderAddress}`)
     if (free < amount) {

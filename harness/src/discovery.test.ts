@@ -33,6 +33,7 @@ function result(rows: CandidateRow[], overrides: Partial<DiscoveryResult> = {}):
     targetHf: 2.0,
     minCollateralUsd: 25,
     candidates: rows.map((r) => r.address),
+    logScan: { chunks: 3, retries: 0, smallestChunk: 10_000, maxLogsInChunk: 120, logs: 300 },
     rows,
     worthDefending,
     counts: {
@@ -99,6 +100,13 @@ test('pickRescueTarget: skips a rescue it cannot afford rather than doing half o
   )
   assert.equal(picked.target?.address, '0xabea4e27232e0e546a57219ad5b1c52cde365d2d')
   assert.match(picked.skipped[0].reason, /above the \$250 ceiling/)
+})
+
+test('pickRescueTarget: the cheapest strategy checks the smaller of the two levers', () => {
+  // repay $26.42 vs supply $64.05: with a $50 ceiling the position is affordable
+  // only because the cheaper lever fits.
+  const picked = pickRescueTarget(result([row()]), { maxRescueUsd: 50, strategy: 'cheapest' })
+  assert.equal(picked.target?.address, row().address)
 })
 
 test('pickRescueTarget: the ceiling is applied to the lever actually being used', () => {

@@ -75,6 +75,7 @@ async function main() {
           targetHf: result.targetHf,
           minCollateralUsd: result.minCollateralUsd,
           counts,
+          logScan: result.logScan,
           worthDefending,
           all: [...result.rows].sort((a, b) => a.healthFactor - b.healthFactor),
         },
@@ -90,6 +91,11 @@ async function main() {
     console.log(`Pool:       ${result.pool}`)
     console.log(`RPC:        ${process.env.RPC_URL ?? '(default public Sepolia node)'}`)
     console.log(`Blocks:     ${result.fromBlock} → ${result.latestBlock} (${result.lookbackBlocks} scanned)`)
+    const scan = result.logScan
+    console.log(
+      `Log scan:   ${scan.chunks} windows, ${scan.logs} logs, largest window returned ${scan.maxLogsInChunk}` +
+        (scan.retries > 0 ? ` — ${scan.retries} refused and halved to ${scan.smallestChunk} blocks` : ''),
+    )
     console.log(
       `Threshold:  HF ${result.hfThreshold} | sizing target HF ${result.targetHf} | min collateral $${result.minCollateralUsd}\n`,
     )
