@@ -44,6 +44,19 @@ export interface Receipt {
   txHash: string | null
   /** Org-scoped KeeperHub execution id, when the write went through. */
   executionId?: string | null
+  /**
+   * How the defended position was chosen. `auto` means Cordon ran discovery and
+   * ranked real positions itself; the ranking it saw is recorded so the choice
+   * can be re-derived from the chain later rather than taken on trust.
+   */
+  selection?: {
+    method: 'auto' | 'explicit'
+    /** Actionable positions available to the selection. */
+    considered: number
+    /** Health factor of the chosen position at selection time. */
+    chosenHf: number | null
+    note: string
+  }
   status: string
   error?: string | null
 }

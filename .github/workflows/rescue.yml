@@ -1,0 +1,68 @@
+name: Third-party rescue
+
+# Defend a position Cordon does not own, through KeeperHub.
+#
+# This is the product thesis, not the evidence campaign: `rescue:auto` scans the
+# live Aave V3 market, ranks positions by health factor, and defends the worst one
+# the treasury can actually make safe. It is manual by design — a rescue spends
+# real value as a gift to a stranger and cannot be taken back, so nothing here
+# should ever run on a schedule.
+#
+# Disclosure: only a small share of Sepolia positions at HF ~1.0 belong to a live
+# user; many are liquidation-bot fixtures. The receipt records the health factor,
+# the threshold in force and the ranking Cordon saw, so which one it was is
+# answerable from the evidence rather than from this comment.
+
+on:
+  workflow_dispatch:
+    inputs:
+      preview:
+        description: "Plan only — discover and size the rescue, touch nothing on chain"
+        type: boolean
+        default: true
+      max_usd:
+        description: "Skip rescues costing more than this (USD)"
+        type: string
+        default: "250"
+
+jobs:
+  rescue:
+    name: Discover and rescue
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # commit the receipt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: harness/package-lock.json
+      - run: npm ci
+        working-directory: harness
+      - name: Rescue the worst position through KeeperHub
+        working-directory: harness
+        env:
+          KH_API_KEY: ${{ secrets.KH_API_KEY }}
+          POSITION_ADDRESS: ${{ secrets.POSITION_ADDRESS }}
+          # The wallet KeeperHub executes from, so the rescue can spend a reserve
+          # that wallet actually holds. Optional: without it the configured
+          # RESERVE is used and the simulation gate refuses if it is unfunded.
+          EXECUTION_WALLET: ${{ vars.EXECUTION_WALLET }}
+          RESERVE: LINK
+          RESCUE_AUTO: "true"
+          RESCUE_MAX_USD: ${{ inputs.max_usd }}
+          HEALTH_FACTOR_THRESHOLD: "1.5"
+          CHAIN_ID: "11155111"
+        run: npm run rescue:auto ${{ inputs.preview && '-- --preview' || '' }}
+      - name: Sync public evidence to site
+        if: ${{ !inputs.preview }}
+        run: node harness/scripts/sync-public-evidence.mjs
+      - name: Commit the receipt
+        if: ${{ !inputs.preview }}
+        run: |
+          git config user.name "Sithu Nyein"
+          git config user.email "sithunyein.mailto@gmail.com"
+          git add harness/receipts/receipts.json public/receipts.json
+          git commit -m "evidence: third-party rescue ($(date -u +%F))" || echo "nothing to commit"
+          git push

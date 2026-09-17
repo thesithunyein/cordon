@@ -91,6 +91,7 @@ through the same safe write as the guardian. Receipts from that path carry:
 | `external: true` | the defended position is not ours |
 | `protectedUser` | the `onBehalfOf` account the write credited |
 | `threshold` | the policy in force for the decision |
+| `selection` | how the position was chosen, when Cordon picked it itself |
 
 A rescue is a gift: `supply` mints the receiver the aToken, `repay` spends our
 funds against their debt, and neither is reversible. A rescue that would revert
@@ -100,4 +101,13 @@ is recorded as `refused: true` with no `txHash`, exactly like a guardian refusal
 cd harness
 npm run find:at-risk                     # no credentials needed
 RESCUE_TARGET=0x… npm run rescue -- --preview
+npm run rescue:auto -- --preview         # let Cordon choose the worst position
 ```
+
+Discovery lives in `src/discovery.ts`, not in the script body, because the command
+a judge runs to inspect the market is the same code that chose the position Cordon
+defended — there is no second, privileged path. `selection.method: auto` marks a
+row Cordon chose itself; `considered` is how many actionable positions the ranking
+saw, and `chosenHf` is the health factor at selection time, so the choice can be
+re-derived from the chain later. Rows where an operator named the target carry
+`method: explicit` and assert nothing about the ranking.

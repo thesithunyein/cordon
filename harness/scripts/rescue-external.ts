@@ -17,13 +17,17 @@
  * Repaid funds are gone; supplied aTokens are minted to the receiver. The script
  * never hides that, and every receipt says it plainly.
  *
- *   npx tsx scripts/rescue-external.ts --preview          # plan only, no chain write
+ *   npx tsx scripts/rescue-external.ts --auto --preview    # Cordon picks, plan only
+ *   npx tsx scripts/rescue-external.ts --auto              # Cordon picks and defends it
  *   RESCUE_TARGET=0x… npx tsx scripts/rescue-external.ts
  *   RESCUE_TARGET=0x… RESCUE_MODE=supply RESCUE_AMOUNT=5.5 npx tsx scripts/rescue-external.ts
  *
  * Env:
- *   RESCUE_TARGET     the position to defend (required)
- *   RESCUE_MODE       repay (default) or supply
+ *   RESCUE_TARGET     the position to defend (required unless RESCUE_AUTO=true)
+ *   RESCUE_AUTO       true = find and rank real positions, then defend the worst one
+ *   RESCUE_MAX_HF     auto mode: only act below this health factor (default 1.5)
+ *   RESCUE_MAX_USD    auto mode: skip rescues that would cost more than this (default 250)
+ *   RESCUE_MODE       repay (default) or supply (default in auto mode)
  *   RESCUE_RESERVE    reserve symbol; repaid default = the target's largest debt
  *   RESCUE_AMOUNT     human units; omit to auto-size against TARGET_HF
  *   TARGET_HF         auto-size target (default 2.0)
@@ -35,7 +39,8 @@
 import { AAVE_V3_SEPOLIA, RESERVES, toWei, type ReserveSymbol } from '../src/aave-v3.js'
 import { loadConfig } from '../src/config.js'
 import { KeeperHubClient } from '../src/kh-client.js'
-import { createRpc, debtsOf, readAccount, readPriceUsd } from '../src/onchain.js'
+import { discoverAtRisk, pickRescueTarget } from '../src/discovery.js'
+import { createRpc, debtsOf, mapLimit, readAccount, readPriceUsd, readTokenBalance, type RpcClient } from '../src/onchain.js'
 import { baseToUsd, healthFactorOf, hasDebt, sizeRescue } from '../src/position-math.js'
 import { appendReceipt, type Receipt } from '../src/receipts.js'
 
@@ -54,23 +59,147 @@ function ceilTo(value: number, decimals: number): number {
   return Math.ceil(value * f) / f
 }
 
+/**
+ * Which reserve a supply-mode rescue spends.
+ *
+ * A supply pulls the asset from the executor's wallet, so the reserve has to be
+ * one that wallet holds *free* — a supply of an asset we do not hold reverts, and
+ * burning a simulation on it tells the operator less than reading the balance
+ * does. On Sepolia that distinction is decisive: the treasury is funded in LINK,
+ * not stablecoins, so the configured reserve is not automatically the usable one.
+ *
+ * With no `EXECUTION_WALLET` there is nothing to read, so we trust the configured
+ * reserve and let the simulation gate refuse if it is wrong — which is recorded.
+ */
+async function chooseSupplyReserve(rpc: RpcClient, config: ReturnType<typeof loadConfig>): Promise<ReserveSymbol> {
+  const requested = (process.env.RESCUE_RESERVE ?? '').trim().toUpperCase() as ReserveSymbol
+  if (requested) return requested
+
+  const funder = (process.env.EXECUTION_WALLET ?? '').trim()
+  if (!/^0x[0-9a-fA-F]{40}$/.test(funder)) return config.reserve
+
+  const symbols = Object.keys(RESERVES) as ReserveSymbol[]
+  const balances = await mapLimit(symbols, 2, async (s) => {
+    const reserve = RESERVES[s]
+    const raw = await readTokenBalance(rpc, reserve.underlying, funder).catch(() => 0n)
+    return { symbol: s, free: Number(raw) / 10 ** reserve.decimals }
+  })
+
+  console.log(`\nExecutor wallet ${funder} — free balances:`)
+  for (const b of balances) console.log(`  ${b.symbol.padEnd(5)} ${b.free.toFixed(6)}`)
+
+  // Prefer the configured reserve when it is funded; otherwise take the largest
+  // balance, which is the asset the treasury actually holds.
+  const configured = balances.find((b) => b.symbol === config.reserve && b.free > 0)
+  const chosen = configured ?? [...balances].sort((a, b) => b.free - a.free)[0]
+  if (!chosen || chosen.free <= 0) {
+    throw new Error(`executor wallet ${funder} holds none of ${symbols.join(', ')} — nothing to supply`)
+  }
+  if (chosen.symbol !== config.reserve) {
+    console.log(`Configured reserve ${config.reserve} is not funded; supplying ${chosen.symbol} instead.`)
+  }
+  console.log(`Supplying from ${chosen.symbol} balance.\n`)
+  return chosen.symbol
+}
+
+/**
+ * Auto mode: rank every real position in the window and take the worst one the
+ * treasury can actually make safe.
+ *
+ * The guards matter more than the ranking does. On Sepolia the deepest positions
+ * are dust or liquidation-bot fixtures, and a position can be genuinely at-risk
+ * while needing more value than the treasury holds — a partial rescue spends
+ * funds and leaves the risk, which is worse than declining. Every skip is printed
+ * with its reason, so the choice can be argued with rather than taken on trust.
+ */
+async function selectAutoTarget(
+  rpc: RpcClient,
+  config: ReturnType<typeof loadConfig>,
+  strategy: 'repay' | 'supply',
+): Promise<{ address: string; selection: NonNullable<Receipt['selection']> }> {
+  const minCollateralUsd = numberEnv('RESCUE_MIN_COLLATERAL_USD', 25)
+  // Never chase a position that is not actually in danger: the point of a rescue
+  // is that it was needed, so the ceiling is the guardian's own threshold.
+  const maxHealthFactor = numberEnv('RESCUE_MAX_HF', Math.min(config.healthFactorThreshold, 1.5))
+  const maxRescueUsd = numberEnv('RESCUE_MAX_USD', 250)
+
+  console.log('\nAuto mode — Cordon is choosing the position to defend')
+  const found = await discoverAtRisk(rpc, {
+    lookbackBlocks: numberEnv('LOOKBACK_BLOCKS', 30_000),
+    hfThreshold: config.healthFactorThreshold,
+    targetHf: TARGET_HF,
+    minCollateralUsd,
+    concurrency: numberEnv('CONCURRENCY', 6),
+    exclude: [config.positionAddress, ...(process.env.EXCLUDE ?? '').split(',')],
+  })
+  console.log(`Scanned:   ${found.candidates.length} accounts named by Pool logs over ${found.lookbackBlocks} blocks`)
+  console.log(
+    `Bearing debt: ${found.counts.withDebt} | at-risk: ${found.counts['at-risk']} | actionable: ${found.worthDefending.length}`,
+  )
+
+  const { target, reason, skipped } = pickRescueTarget(found, {
+    minCollateralUsd,
+    maxHealthFactor,
+    maxRescueUsd,
+    strategy,
+  })
+  for (const s of skipped.slice(0, 5)) console.log(`  skip ${s.address} — ${s.reason}`)
+  if (skipped.length > 5) console.log(`  …and ${skipped.length - 5} more skipped`)
+  if (!target) throw new Error(`auto selection found nothing to defend: ${reason}`)
+
+  console.log(`Chosen:    ${target.address} — ${reason}`)
+  console.log(
+    `           collateral $${target.collateralUsd.toFixed(2)} | debt $${target.debtUsd.toFixed(2)} | ` +
+      `liquidation threshold ${(target.liquidationThreshold * 100).toFixed(1)}%`,
+  )
+
+  return {
+    address: target.address,
+    selection: {
+      method: 'auto',
+      considered: found.worthDefending.length,
+      chosenHf: target.healthFactor,
+      note: `${reason}; ${found.counts.withDebt} accounts with debt scanned over ${found.lookbackBlocks} blocks, ${skipped.length} skipped by the selection guards`,
+    },
+  }
+}
+
 async function main() {
   const preview = process.argv.includes('--preview') || (process.env.RESCUE_PREVIEW ?? '') === 'true'
   const confirmForce = (process.env.RESCUE_FORCE ?? '') === 'true'
-  const mode = (process.env.RESCUE_MODE ?? 'repay').toLowerCase()
+  const auto = process.argv.includes('--auto') || (process.env.RESCUE_AUTO ?? '') === 'true'
+  // Auto mode defaults to `supply`. A repay must target the asset the stranger
+  // actually borrowed, whereas supplying our own reserve works against any debt —
+  // and the reserve is the asset the treasury is actually funded in.
+  const mode = (process.env.RESCUE_MODE ?? (auto ? 'supply' : 'repay')).toLowerCase()
   if (mode !== 'repay' && mode !== 'supply') throw new Error(`RESCUE_MODE must be repay or supply, got "${mode}"`)
 
-  const target = (process.env.RESCUE_TARGET ?? '').trim()
-  if (!/^0x[0-9a-fA-F]{40}$/.test(target)) {
-    throw new Error('Set RESCUE_TARGET to the position to defend (find one with: npm run find:at-risk)')
+  const config = loadConfig()
+  const rpc = createRpc()
+
+  let target = (process.env.RESCUE_TARGET ?? '').trim()
+  let selection: Receipt['selection'] = {
+    method: 'explicit',
+    considered: 1,
+    chosenHf: null,
+    note: 'position named by the operator',
   }
 
-  const config = loadConfig()
+  if (!/^0x[0-9a-fA-F]{40}$/.test(target)) {
+    if (!auto) {
+      throw new Error(
+        'Set RESCUE_TARGET to the position to defend, or pass --auto to have Cordon find and rank one itself (see: npm run find:at-risk)',
+      )
+    }
+    const chosen = await selectAutoTarget(rpc, config, mode)
+    target = chosen.address
+    selection = chosen.selection
+  }
+
   if (target.toLowerCase() === config.positionAddress.toLowerCase()) {
     throw new Error('RESCUE_TARGET is our own watched position — use `npm run guard` for that, not a rescue.')
   }
 
-  const rpc = createRpc()
   const account = await readAccount(rpc, target, AAVE_V3_SEPOLIA.pool)
   if (!account) throw new Error(`could not read Aave account data for ${target}`)
   if (!hasDebt(account)) throw new Error(`${target} carries no debt — nothing to defend.`)
@@ -107,7 +236,7 @@ async function main() {
     owedInSymbol = selected.amount
     console.log(`Owes:      ${debts.map((d) => `${d.symbol} ${d.amount.toFixed(4)}`).join(', ')} → repaying ${symbol}`)
   } else {
-    symbol = ((process.env.RESCUE_RESERVE ?? config.reserve).toUpperCase() as ReserveSymbol)
+    symbol = await chooseSupplyReserve(rpc, config)
   }
 
   const reserve = RESERVES[symbol]
@@ -136,6 +265,20 @@ async function main() {
   if (amount <= 0) {
     console.log('\nNothing to do: the position is already at or above the target health factor.')
     return
+  }
+
+  // The treasury has to actually hold what we are about to spend. Checking here
+  // names the shortfall; the simulation gate would otherwise refuse with a revert
+  // string that never says which balance ran out.
+  const funderAddress = (process.env.EXECUTION_WALLET ?? '').trim()
+  if (/^0x[0-9a-fA-F]{40}$/.test(funderAddress)) {
+    const free = Number(await readTokenBalance(rpc, reserve.underlying, funderAddress)) / 10 ** reserve.decimals
+    console.log(`Treasury:  ${free} ${symbol} free in ${funderAddress}`)
+    if (free < amount) {
+      throw new Error(
+        `executor wallet ${funderAddress} holds ${free} ${symbol} but this rescue needs ${amount} ${symbol} — fund it or lower RESCUE_AMOUNT`,
+      )
+    }
   }
 
   const amountWei = toWei(symbol, amount)
@@ -201,6 +344,8 @@ async function main() {
     external: true,
     /** The threshold in force for this decision. Recorded so the judgement is auditable. */
     threshold: config.healthFactorThreshold,
+    /** How this position was chosen, so an automatic choice stays re-derivable. */
+    selection,
     healthFactorBefore: account.healthFactor.toString(),
     healthFactorAfter: hfAfter,
     decision: result.refused ? 'refuse' : 'rescue',
@@ -218,6 +363,11 @@ async function main() {
   if (result.refused) {
     console.log(`\nREFUSED by the simulation gate — zero gas spent, nothing broadcast.`)
     console.log(`Reason: ${result.error ?? 'simulation reverted'}`)
+    // Allowance is the one refusal an operator can clear in a single call.
+    if (/allowance|transfer amount exceeds/i.test(result.error ?? '')) {
+      console.log(`\nThe Pool cannot pull ${symbol} yet — grant the allowance and retry:`)
+      console.log(`  npm run approve -- RESERVE=${symbol}`)
+    }
     console.log('Recorded as a refusal in harness/receipts/receipts.json.')
     return
   }

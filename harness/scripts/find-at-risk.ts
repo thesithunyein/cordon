@@ -6,6 +6,9 @@
  * signature from the protected user is required — the only hard part is finding
  * someone worth protecting.
  *
+ * The discovery itself lives in `src/discovery.ts`, because `rescue-external.ts
+ * --auto` acts on the same result. This file is only the presentation.
+ *
  * Pure JSON-RPC: no KeeperHub key, no new dependencies, runnable by anyone.
  *
  *   npx tsx scripts/find-at-risk.ts                    # ranked table
@@ -30,98 +33,14 @@
  *   EXCLUDE            optional comma-separated addresses to skip
  */
 
-import { AAVE_V3_SEPOLIA } from '../src/aave-v3.js'
-import { createRpc, mapLimit, readAccount, type RpcClient } from '../src/onchain.js'
-import {
-  baseToUsd,
-  classifyRisk,
-  healthFactorOf,
-  hasDebt,
-  sizeRescue,
-  type RiskClass,
-} from '../src/position-math.js'
-
-const POOL = process.env.POOL_ADDRESS ?? AAVE_V3_SEPOLIA.pool
-const LOOKBACK_BLOCKS = numberEnv('LOOKBACK_BLOCKS', 30_000)
-const HF_THRESHOLD = numberEnv('HF_THRESHOLD', 1.6)
-const TARGET_HF = numberEnv('TARGET_HF', 2.0)
-const MIN_COLLATERAL_USD = numberEnv('MIN_COLLATERAL_USD', 25)
-const CONCURRENCY = numberEnv('CONCURRENCY', 6)
-const CHUNK = numberEnv('LOG_CHUNK_BLOCKS', 10_000)
+import { discoverAtRisk } from '../src/discovery.js'
+import type { RiskClass } from '../src/position-math.js'
 
 function numberEnv(name: string, fallback: number): number {
   const raw = process.env[name]
   if (raw === undefined || raw.trim() === '') return fallback
   const n = Number(raw)
   return Number.isFinite(n) && n > 0 ? n : fallback
-}
-
-/**
- * Collect candidate accounts from recent Pool logs.
- *
- * Deliberately event-shape agnostic: which topic index holds the account differs
- * between Borrow, Supply, Repay and Withdraw. We take every address-shaped topic
- * from account-bearing logs and let `getUserAccountData` be the judge — a wrong
- * guess costs one cheap eth_call, whereas a hand-guessed event signature that is
- * subtly wrong would silently return nothing, which is worse.
- *
- * Logs with 4 topics carry three indexed params (Borrow/Supply/Repay/Withdraw);
- * logs with 2 carry one (ReserveDataUpdated) and only ever name a reserve, so
- * they are skipped unless nothing else is available.
- */
-async function collectCandidates(rpc: RpcClient, fromBlock: number, toBlock: number): Promise<string[]> {
-  const accountBearing = new Set<string>()
-  const anyAddress = new Set<string>()
-  let chunk = CHUNK
-  let start = fromBlock
-
-  while (start <= toBlock) {
-    const end = Math.min(start + chunk - 1, toBlock)
-    let logs: { topics: string[] }[]
-    try {
-      logs = await rpc.getLogs({
-        address: POOL,
-        fromBlock: '0x' + start.toString(16),
-        toBlock: '0x' + end.toString(16),
-      })
-    } catch (err) {
-      // Nodes cap the result set; halve the window and retry until it fits.
-      if (chunk > 1) {
-        chunk = Math.max(1, Math.floor(chunk / 2))
-        continue
-      }
-      throw err
-    }
-
-    for (const log of logs) {
-      const addresses: string[] = []
-      for (const topic of log.topics.slice(1, 4)) {
-        if (topic.length !== 66) continue
-        const address = '0x' + topic.slice(26)
-        if (/^0x0{40}$/.test(address)) continue
-        if (address.toLowerCase() === POOL.toLowerCase()) continue
-        addresses.push(address)
-      }
-      for (const address of addresses) {
-        anyAddress.add(address)
-        if (log.topics.length === 4) accountBearing.add(address)
-      }
-    }
-    start = end + 1
-  }
-
-  return [...(accountBearing.size > 0 ? accountBearing : anyAddress)]
-}
-
-interface Row {
-  address: string
-  risk: RiskClass
-  healthFactor: number
-  collateralUsd: number
-  debtUsd: number
-  liquidationThreshold: number
-  repayToTargetUsd: number
-  supplyToTargetUsd: number
 }
 
 const fmtUsd = (n: number): string => (n >= 1000 ? n.toFixed(0) : n.toFixed(2))
@@ -131,72 +50,33 @@ async function main() {
   const top = topIndex !== -1 ? Number(process.argv[topIndex + 1]) : 15
   const asJson = process.argv.includes('--json')
 
-  const excluded = new Set(
-    [process.env.POSITION_ADDRESS, ...(process.env.EXCLUDE ?? '').split(',')]
-      .map((a) => (a ?? '').trim().toLowerCase())
-      .filter((a) => /^0x[0-9a-f]{40}$/.test(a)),
-  )
+  const lookbackBlocks = numberEnv('LOOKBACK_BLOCKS', 30_000)
+  const result = await discoverAtRisk({
+    lookbackBlocks,
+    hfThreshold: numberEnv('HF_THRESHOLD', 1.6),
+    targetHf: numberEnv('TARGET_HF', 2.0),
+    minCollateralUsd: numberEnv('MIN_COLLATERAL_USD', 25),
+    concurrency: numberEnv('CONCURRENCY', 6),
+    logChunkBlocks: numberEnv('LOG_CHUNK_BLOCKS', 10_000),
+    exclude: [process.env.POSITION_ADDRESS ?? '', ...(process.env.EXCLUDE ?? '').split(',')],
+  })
 
-  const rpc = createRpc()
-  const latest = await rpc.blockNumber()
-  const from = Math.max(0, latest - LOOKBACK_BLOCKS)
-
-  if (!asJson) {
-    console.log('\nCordon — Aave V3 position finder')
-    console.log(`Pool:       ${POOL}`)
-    console.log(`RPC:        ${rpc.url}`)
-    console.log(`Blocks:     ${from} → ${latest} (${LOOKBACK_BLOCKS} scanned)`)
-    console.log(`Threshold:  HF ${HF_THRESHOLD} | sizing target HF ${TARGET_HF} | min collateral $${MIN_COLLATERAL_USD}\n`)
-  }
-
-  const candidates = (await collectCandidates(rpc, from, latest)).filter((a) => !excluded.has(a.toLowerCase()))
-  const accounts = await mapLimit(candidates, CONCURRENCY, async (address) => ({
-    address,
-    account: await readAccount(rpc, address, POOL),
-  }))
-
-  const rows: Row[] = []
-  for (const { address, account } of accounts) {
-    if (!account || !hasDebt(account)) continue
-    const sizing = sizeRescue(account, TARGET_HF)
-    rows.push({
-      address,
-      risk: classifyRisk(account, HF_THRESHOLD),
-      healthFactor: healthFactorOf(account),
-      collateralUsd: baseToUsd(account.collateralBase),
-      debtUsd: baseToUsd(account.debtBase),
-      liquidationThreshold: sizing.liquidationThreshold,
-      repayToTargetUsd: sizing.repayUsd,
-      supplyToTargetUsd: sizing.supplyUsd,
-    })
-  }
-
-  const byRisk = (risk: RiskClass) => rows.filter((r) => r.risk === risk)
-  const worthDefending = rows
-    .filter((r) => (r.risk === 'at-risk' || r.risk === 'near-risk') && r.collateralUsd >= MIN_COLLATERAL_USD)
-    .sort((a, b) => a.healthFactor - b.healthFactor)
+  const { worthDefending, counts } = result
+  const byRisk = (risk: RiskClass) => counts[risk]
 
   if (asJson) {
     console.log(
       JSON.stringify(
         {
-          pool: POOL,
-          latestBlock: latest,
-          lookbackBlocks: LOOKBACK_BLOCKS,
-          hfThreshold: HF_THRESHOLD,
-          targetHf: TARGET_HF,
-          minCollateralUsd: MIN_COLLATERAL_USD,
-          counts: {
-            candidates: candidates.length,
-            withDebt: rows.length,
-            atRisk: byRisk('at-risk').length,
-            nearRisk: byRisk('near-risk').length,
-            liquidatable: byRisk('liquidatable').length,
-            badDebt: byRisk('bad-debt').length,
-            healthy: byRisk('healthy').length,
-          },
+          pool: result.pool,
+          latestBlock: result.latestBlock,
+          lookbackBlocks: result.lookbackBlocks,
+          hfThreshold: result.hfThreshold,
+          targetHf: result.targetHf,
+          minCollateralUsd: result.minCollateralUsd,
+          counts,
           worthDefending,
-          all: rows.sort((a, b) => a.healthFactor - b.healthFactor),
+          all: [...result.rows].sort((a, b) => a.healthFactor - b.healthFactor),
         },
         null,
         2,
@@ -205,13 +85,23 @@ async function main() {
     return
   }
 
-  console.log(`Candidate accounts: ${candidates.length}`)
-  console.log(`Accounts carrying debt: ${rows.length}`)
+  if (!asJson) {
+    console.log('\nCordon — Aave V3 position finder')
+    console.log(`Pool:       ${result.pool}`)
+    console.log(`RPC:        ${process.env.RPC_URL ?? '(default public Sepolia node)'}`)
+    console.log(`Blocks:     ${result.fromBlock} → ${result.latestBlock} (${result.lookbackBlocks} scanned)`)
+    console.log(
+      `Threshold:  HF ${result.hfThreshold} | sizing target HF ${result.targetHf} | min collateral $${result.minCollateralUsd}\n`,
+    )
+  }
+
+  console.log(`Candidate accounts: ${counts.candidates}`)
+  console.log(`Accounts carrying debt: ${counts.withDebt}`)
   console.log('')
   console.log('  risk class    accounts')
   console.log('  ' + '-'.repeat(24))
   for (const risk of ['at-risk', 'near-risk', 'liquidatable', 'bad-debt', 'healthy'] as RiskClass[]) {
-    console.log(`  ${risk.padEnd(13)} ${String(byRisk(risk).length).padStart(8)}`)
+    console.log(`  ${risk.padEnd(13)} ${String(byRisk(risk)).padStart(8)}`)
   }
 
   if (worthDefending.length === 0) {
@@ -219,8 +109,8 @@ async function main() {
     console.log('Everything carrying debt is either dust, already liquidatable, or bad debt.')
     console.log('Widen the scan (LOOKBACK_BLOCKS=200000) or lower MIN_COLLATERAL_USD to see the dust.')
   } else {
-    console.log(`\nWorth defending (collateral ≥ $${MIN_COLLATERAL_USD}, HF < 2.0):`)
-    console.log('    health   collateral        debt   liq.thr      size→' + TARGET_HF + '    address')
+    console.log(`\nWorth defending (collateral ≥ $${result.minCollateralUsd}, HF < ${result.targetHf}):`)
+    console.log('    health   collateral        debt   liq.thr      size→' + result.targetHf + '    address')
     console.log('    ' + '-'.repeat(92))
     for (const r of worthDefending.slice(0, top)) {
       console.log(
@@ -230,15 +120,17 @@ async function main() {
           `  ${fmtUsd(r.repayToTargetUsd).padStart(10)}   ${r.address}`,
       )
     }
-    console.log('\n  `!` = below your HF threshold. size→' + TARGET_HF + ' is base-currency USD to reach HF ' + TARGET_HF + '.')
+    console.log('\n  `!` = below your HF threshold. size→' + result.targetHf + ' is base-currency USD to reach HF ' + result.targetHf + '.')
     const best = worthDefending[0]
     console.log('\nBest candidate:')
     console.log(`  RESCUE_TARGET=${best.address}`)
     console.log(`  HF ${best.healthFactor.toFixed(4)} | collateral $${fmtUsd(best.collateralUsd)} | debt $${fmtUsd(best.debtUsd)}`)
-    console.log(`  To reach HF ${TARGET_HF}: repay $${fmtUsd(best.repayToTargetUsd)} of debt, or supply $${fmtUsd(best.supplyToTargetUsd)} of collateral.`)
+    console.log(`  To reach HF ${result.targetHf}: repay $${fmtUsd(best.repayToTargetUsd)} of debt, or supply $${fmtUsd(best.supplyToTargetUsd)} of collateral.`)
     console.log('  Both are gifts to the receiver and cannot be taken back.')
-    console.log(`\n  Defend it through KeeperHub (preview first, then drop --preview):`)
+    console.log('\n  Defend it through KeeperHub (preview first, then drop --preview):')
     console.log(`    RESCUE_TARGET=${best.address} npm run rescue -- --preview`)
+    console.log('\n  Or let Cordon choose and defend the worst position itself:')
+    console.log('    npm run rescue:auto -- --preview')
   }
   console.log('')
 }

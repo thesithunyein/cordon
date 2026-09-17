@@ -9,6 +9,7 @@
     "campaign": "tsx src/campaign.ts",
     "find:at-risk": "tsx scripts/find-at-risk.ts",
     "rescue": "tsx scripts/rescue-external.ts",
+    "rescue:auto": "tsx scripts/rescue-external.ts --auto",
     "typecheck": "tsc --noEmit",
     "approve": "tsx scripts/approve-reserve.ts",
     "mint": "tsx scripts/mint-reserve.ts",

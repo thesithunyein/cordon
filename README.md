@@ -344,7 +344,7 @@ cd harness
 cp .env.example .env            # KH_API_KEY=kh_...  POSITION_ADDRESS=0x...
 npm install
 npm run setup                   # validates env + proves the live MCP → Aave read
-npm test                        # unit + evidence-integrity tests (58)
+npm test                        # unit + evidence-integrity tests (82)
 ```
 
 Then the full toolkit:
@@ -352,6 +352,8 @@ Then the full toolkit:
 ```bash
 npm run guard                   # one full detect → simulate → execute → verify cycle
 npm run campaign                # N cycles → receipts/receipts.json (append-only)
+npm run find:at-risk            # rank live Aave V3 positions (no credentials needed)
+npm run rescue:auto             # defend the worst of them through KeeperHub
 npm run drill                   # failure drills: stand-down, refusal, 429-retry
 npm run workflow:push           # push the workflow-as-code definition to KeeperHub
 npm run mint                    # mint testnet assets from the Aave Sepolia faucet
@@ -415,6 +417,7 @@ whose owner is asleep — no signature from the protected account is required:
 ```bash
 npm run find:at-risk                     # rank real Sepolia positions by health factor
 RESCUE_TARGET=0x… npm run rescue         # defend one through simulate → execute → verify
+npm run rescue:auto                      # rank the market and defend the worst position
 ```
 
 A rescue goes through the same safe write as the guardian: simulate the exact
@@ -423,6 +426,19 @@ health factor from the chain. **A rescue is a gift** — repaid funds are gone a
 supplied aTokens belong to the receiver — so the script says so before it spends
 anything, receipts mark the row `external: true` with the `protectedUser`, and a
 rescue that would revert lands as a refusal instead of a transaction.
+
+`rescue:auto` closes the loop: it runs the same discovery the finder prints, takes
+the lowest actionable health factor, and confirms the treasury can fund the rescue
+before spending anything. Two guards matter more than the ranking does — a floor on
+collateral, so a rescue is never spent on dust, and a ceiling on cost, because a
+position can be genuinely at-risk while needing more value than the wallet holds,
+and a partial rescue spends funds without removing the risk. Every skipped
+candidate is printed with its reason, and the receipt records the ranking as
+`selection`, so an automatic choice stays re-derivable rather than taken on trust.
+Three env vars shape it: `RESCUE_MAX_HF` (1.5), `RESCUE_MAX_USD` (250), and
+`EXECUTION_WALLET` — set that last one to the wallet KeeperHub executes from, and a
+rescue spends a reserve it actually holds and checks the balance before simulating,
+rather than discovering an unfunded reserve as an opaque revert.
 
 ## What still breaks
 
