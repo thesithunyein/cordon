@@ -43,8 +43,14 @@
 > 4. **Cordon has rescued a position it does not own.** On 2026-09-17 it ranked the
 >    live Sepolia market, found `0xabea4e27…` at **HF 1.0048** — one oracle tick from
 >    liquidation — and repaid **26.42 USDC** of a stranger's debt through KeeperHub
->    (execution id `clnydj468ihzjh0s15ihk`). Their health factor is **1.999997** now,
->    read back from the chain, and their debt went **$53.09 → $26.67**.
+>    (execution id `clnydj468ihzjh0s15ihk`). Their debt went **$53.09 → $26.67**, and
+>    re-reading the account later still returns **HF 1.999938** — the rescue held rather
+>    than being liquidated minutes afterwards. What that proves is the mechanism, end
+>    to end, on a real position belonging to a real account — not that a person in
+>    trouble was saved. The account has history back to 2024 and holds **9,990 USDC it
+>    is not using**, so the honest reading is that this is a live on-chain position
+>    rather than a user in need. A testnet can show the mechanism runs; only mainnet
+>    could show anyone cared.
 > 5. **Every protective top-up raised the health factor, 4.50 → 2,555.58 across 1,107
 >    executions** — the before/after is in every receipt, recomputable from
 >    `receipts.json`.
