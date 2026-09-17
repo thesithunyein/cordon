@@ -1,9 +1,9 @@
 diff --git a/keeperhub-events/event-tracker/lib/correlation.ts b/keeperhub-events/event-tracker/lib/correlation.ts
 new file mode 100644
-index 000000000..87e3e319e
+index 000000000..d82c1dfec
 --- /dev/null
 +++ b/keeperhub-events/event-tracker/lib/correlation.ts
-@@ -0,0 +1,13 @@
+@@ -0,0 +1,17 @@
 +import { randomBytes } from "node:crypto";
 +
 +/**
@@ -13,11 +13,14 @@ index 000000000..87e3e319e
 + * and reused by the executor (which falls back to minting its own when the id
 + * is absent, e.g. legacy messages or non-event triggers). Same format as the
 + * executor's generateCorrelationId so a single run traces across both systems.
++ *
++ * Deliberately duplicated rather than imported: keeperhub-events is a separate
++ * pnpm workspace and cannot import the app's root lib/ (same convention as
++ * this package's phantom.ts and sqs-message-auth.ts).
 + */
 +export function generateCorrelationId(): string {
 +  return randomBytes(8).toString("hex");
 +}
-\ No newline at end of file
 diff --git a/keeperhub-events/event-tracker/lib/workflow-sqs.ts b/keeperhub-events/event-tracker/lib/workflow-sqs.ts
 index 33a1f84fa..2e79db09f 100644
 --- a/keeperhub-events/event-tracker/lib/workflow-sqs.ts
@@ -49,17 +52,17 @@ index 33a1f84fa..2e79db09f 100644
    const body = JSON.stringify(payload);
    await client.send(
 diff --git a/keeperhub-events/event-tracker/src/listener/event-listener.ts b/keeperhub-events/event-tracker/src/listener/event-listener.ts
-index 4a859286e..829676523 100644
+index 4a859286e..bf27e2cee 100644
 --- a/keeperhub-events/event-tracker/src/listener/event-listener.ts
 +++ b/keeperhub-events/event-tracker/src/listener/event-listener.ts
-@@ -5,6 +5,7 @@ import {
+@@ -1,6 +1,7 @@
+ import type { SQSClient } from "@aws-sdk/client-sqs";
+ import type { ethers } from "ethers";
+ import { hexlify, toUtf8Bytes } from "ethers";
++import { generateCorrelationId } from "../../lib/correlation";
+ import {
    createPhantomExecution,
    failPhantomExecution,
- } from "../../lib/phantom";
-+import { generateCorrelationId } from "../../lib/correlation";
- import { logger } from "../../lib/utils/logger";
- import { enqueueWorkflowEventTrigger } from "../../lib/workflow-sqs";
- import {
 @@ -237,6 +238,15 @@ export class EventListener {
          return;
        }
@@ -105,11 +108,11 @@ index 4a859286e..829676523 100644
        if (executionId) {
 diff --git a/keeperhub-events/event-tracker/tests/unit/workflow-sqs.test.ts b/keeperhub-events/event-tracker/tests/unit/workflow-sqs.test.ts
 new file mode 100644
-index 000000000..6c3a0f01e
+index 000000000..6e1e365c8
 --- /dev/null
 +++ b/keeperhub-events/event-tracker/tests/unit/workflow-sqs.test.ts
 @@ -0,0 +1,52 @@
-+import { SendMessageCommand } from "@aws-sdk/client-sqs";
++import type { SendMessageCommand } from "@aws-sdk/client-sqs";
 +import { describe, expect, it, vi } from "vitest";
 +import { enqueueWorkflowEventTrigger } from "../../lib/workflow-sqs";
 +
@@ -161,13 +164,220 @@ index 000000000..6c3a0f01e
 +    expect(Object.keys(body)).not.toContain("correlationId");
 +  });
 +});
-\ No newline at end of file
+diff --git a/keeperhub-executor/in-process-broadcast-cleanup.test.ts b/keeperhub-executor/in-process-broadcast-cleanup.test.ts
+new file mode 100644
+index 000000000..e0136a1f4
+--- /dev/null
++++ b/keeperhub-executor/in-process-broadcast-cleanup.test.ts
+@@ -0,0 +1,201 @@
++import { describe, expect, it, type Mock, vi } from "vitest";
++import { existsSync, mkdtempSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { afterAll, afterEach } from "vitest";
++
++// lib/metrics/collectors/prometheus.ts is server-only; stub it so the lazy
++// counter import inside broadcast-marker can resolve (same approach as
++// broadcast-marker.test.ts).
++vi.mock("server-only", () => ({}));
++
++// The marker dir is resolved at module load; point it at a scratch dir
++// before the first import. Mirrors broadcast-marker.test.ts's afterAll:
++// restore the env and remove the scratch dir so neither leaks past this
++// file's worker.
++const TMP = mkdtempSync(join(tmpdir(), "kh-inprocess-cleanup-test-"));
++const PREV_MARKER_DIR = process.env.KH_BROADCAST_MARKER_DIR;
++process.env.KH_BROADCAST_MARKER_DIR = TMP;
++
++afterAll(() => {
++  if (PREV_MARKER_DIR === undefined) {
++    delete process.env.KH_BROADCAST_MARKER_DIR;
++  } else {
++    process.env.KH_BROADCAST_MARKER_DIR = PREV_MARKER_DIR;
++  }
++  rmSync(TMP, { recursive: true, force: true });
++});
++
++// The run under test must broadcast (write its marker) and then throw, so
++// the engine mock does exactly that before failing. Same relative specifier
++// in-process.ts uses, so this is the same module instance the real call
++// path would reach.
++vi.mock("../lib/workflow/executor/executor.workflow", () => ({
++  executeWorkflow: vi.fn(async () => {
++    const { markBroadcast } = await import("./lib/broadcast-marker");
++    markBroadcast("exec-fail");
++    throw new Error("boom after broadcast");
++  }),
++}));
++
++// Everything else executeInProcess touches on the way to and through the
++// failure catch - DB access, validation, metrics - is stubbed at the same
++// specifier in-process.ts imports them from.
++vi.mock("../lib/workflow/load-for-execution", () => ({
++  loadWorkflowForExecution: vi.fn(async () => ({
++    status: "ok",
++    workflow: { nodes: [], edges: [], organizationId: "org-1" },
++    organizationName: "Org",
++  })),
++}));
++vi.mock("../lib/db/integrations", () => ({
++  validateWorkflowIntegrations: vi.fn(async () => ({ valid: true })),
++}));
++vi.mock("../lib/workflow/executor/build-executor-input", () => ({
++  buildExecutorInput: vi.fn((_wf: unknown, input: unknown) => input),
++}));
++vi.mock("./lib/db-helpers", () => ({
++  updateExecutionStatus: vi.fn(async () => undefined),
++  updateScheduleStatus: vi.fn(async () => undefined),
++  initializeExecutionProgress: vi.fn(async () => undefined),
++  applyExecutionResult: vi.fn(async () => ({ errorMessage: undefined })),
++}));
++vi.mock("../lib/metrics", () => ({
++  getMetricsCollector: vi.fn(() => ({ recordLatency: vi.fn() })),
++}));
++vi.mock("../lib/metrics/types", () => ({
++  LabelKeys: {},
++  MetricNames: {},
++}));
++vi.mock("./api-execute", () => ({
++  executeViaApi: vi.fn(),
++}));
++vi.mock("../lib/logging", () => ({
++  logInfo: vi.fn(),
++  logWarn: vi.fn(),
++  logError: vi.fn(),
++}));
++
++const { executeInProcess } = await import("./in-process");
++const broadcastMarker = await import("./lib/broadcast-marker");
++const { getBroadcastMarkerPath } = broadcastMarker;
++// This test stands in for the executor process, the only kind of process that
++// may populate the registry: flip the write gate so markBroadcast in the
++// engine mock actually writes the file the failure catch must remove.
++broadcastMarker.enableBroadcastMarkers();
++const dbHelpers = await import("./lib/db-helpers");
++
++afterEach(() => {
++  rmSync(join(TMP, "exec-fail.json"), { force: true });
++  rmSync(join(TMP, "exec-nomark.json"), { force: true });
++  vi.clearAllMocks();
++});
++
++describe("executeInProcess broadcast marker cleanup (issue #2289 blocking item)", () => {
++  it("a run that broadcasts and then throws leaves no marker file behind", async () => {
++    // The engine mock writes exec-fail.json via the real markBroadcast, then
++    // throws. The success path's takeBroadcastMarker never runs; the catch
++    // is the only thing that can remove the file.
++    await executeInProcess({
++      workflowId: "wf-1",
++      executionId: "exec-fail",
++      input: {},
++      triggerType: "manual",
++      db: {} as never,
++    });
++
++    expect(existsSync(getBroadcastMarkerPath("exec-fail"))).toBe(false);
++    // The failure still lands as an execution error, after the cleanup.
++    expect(dbHelpers.updateExecutionStatus).toHaveBeenCalledWith(
++      expect.anything(),
++      "exec-fail",
++      "error",
++      expect.objectContaining({ error: "boom after broadcast" })
++    );
++  });
++
++  it("threads the executor's epochs into the in-process timeline", async () => {
++    // The executor stamps observed/received on its own instance before the
++    // hand-off. Passing only the correlation id left stageMs("received",
++    // "started") and stageMs("observed", "broadcast") permanently undefined
++    // here, so the in-process queue leg was measured nowhere (index.ts skips
++    // the dispatch histogram for this target) and the headline observed ->
++    // broadcast histogram had no in-process series at all.
++    const { executeWorkflow } = await import(
++      "../lib/workflow/executor/executor.workflow"
++    );
++    vi.mocked(executeWorkflow).mockImplementationOnce(async () => {
++      const { markBroadcast } = await import("./lib/broadcast-marker");
++      markBroadcast("exec-timeline");
++      return { success: true, results: {}, outputs: {} };
++    });
++
++    await executeInProcess({
++      workflowId: "wf-1",
++      executionId: "exec-timeline",
++      input: {},
++      triggerType: "event",
++      db: {} as never,
++      correlationId: "corr-timeline",
++      latencyEpochs: { receivedAt: 1_000, observedAt: 900 },
++    });
++
++    const { logInfo } = await import("../lib/logging");
++    const line = vi
++      .mocked(logInfo)
++      .mock.calls.find(([message]) => message === "execution latency stages");
++    expect(line).toBeDefined();
++    const labels = line?.[1] as Record<string, string>;
++    expect(labels.correlation_id).toBe("corr-timeline");
++    // Both executor epochs survive into the emitted timeline: the sample line
++    // documented in the PR description is now producible on this path.
++    expect(labels.observedAt).toBe(new Date(900).toISOString());
++    expect(labels.receivedAt).toBe(new Date(1_000).toISOString());
++    // The queue leg and the headline interval both exist now.
++    expect(Number(labels.queueToStartMs)).toBeGreaterThanOrEqual(0);
++    expect(Number(labels.observed_to_broadcast_ms)).toBeGreaterThanOrEqual(0);
++    // receive -> terminal, anchored to the executor's receive stamp (epoch
++    // 1_000) rather than to this process's own start a few ms ago.
++    expect(Number(labels.totalMs)).toBeGreaterThan(1_000_000);
++
++    // All three in-process series are recorded: dispatch (received ->
++    // started), execution (received -> terminal) and the headline broadcast.
++    const { getMetricsCollector } = await import("../lib/metrics");
++    const recorded = vi
++      .mocked(getMetricsCollector)
++      .mock.results.flatMap((result) =>
++        (result.value as { recordLatency: Mock }).recordLatency.mock.calls.map(
++          (call) => call[1] as number
++        )
++      );
++    expect(recorded).toHaveLength(3);
++    expect(recorded.some((ms) => ms > 1_000_000)).toBe(true);
++  });
++
++  it("a failing run with no broadcast marker cleans up nothing and still reports the error", async () => {
++    vi.mocked(
++      (await import("../lib/workflow/executor/executor.workflow"))
++        .executeWorkflow
++    ).mockImplementationOnce(async () => {
++      throw new Error("boom before broadcast");
++    });
++
++    await expect(
++      executeInProcess({
++        workflowId: "wf-1",
++        executionId: "exec-nomark",
++        input: {},
++        triggerType: "manual",
++        db: {} as never,
++      })
++    ).resolves.toBeUndefined();
++
++    expect(existsSync(getBroadcastMarkerPath("exec-nomark"))).toBe(false);
++    expect(dbHelpers.updateExecutionStatus).toHaveBeenCalledWith(
++      expect.anything(),
++      "exec-nomark",
++      "error",
++      expect.objectContaining({ error: "boom before broadcast" })
++    );
++  });
++});
 diff --git a/keeperhub-executor/in-process.ts b/keeperhub-executor/in-process.ts
-index d3ee04bff..4bbe9b8a2 100644
+index d3ee04bff..278056233 100644
 --- a/keeperhub-executor/in-process.ts
 +++ b/keeperhub-executor/in-process.ts
-@@ -1,10 +1,13 @@
+@@ -1,10 +1,14 @@
  import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
++import { takeBroadcastMarker } from "./lib/broadcast-marker";
  import { validateWorkflowIntegrations } from "../lib/db/integrations";
 +import { getMetricsCollector } from "../lib/metrics";
 +import { LabelKeys, MetricNames } from "../lib/metrics/types";
@@ -180,16 +390,40 @@ index d3ee04bff..4bbe9b8a2 100644
  import type { DbSchema } from "./lib/db-helpers";
  import {
    applyExecutionResult,
-@@ -25,12 +28,17 @@ export async function executeInProcess(params: {
+@@ -25,12 +29,41 @@ export async function executeInProcess(params: {
    triggerType: ApiExecuteTriggerType;
    scheduleId?: string;
    db: PostgresJsDatabase<DbSchema>;
 +  /** Latency correlation (issue #2289): the id minted at SQS receive. */
 +  correlationId?: string;
++  /**
++   * Latency observation anchors (issue #2289): the executor's own stage
++   * stamps, so this process records one timeline rather than starting a
++   * second, unrelated one. Same shape the k8s-job branch passes.
++   */
++  latencyEpochs?: { receivedAt?: number; observedAt?: number };
  }): Promise<void> {
    const { workflowId, executionId, input, triggerType, scheduleId, db } =
      params;
++  const { receivedAt, observedAt } = params.latencyEpochs ?? {};
 +  const latency = new ExecutionLatency(params.correlationId);
++  // The timeline belongs to the executor's instance: it stamps `observed`
++  // when the event-tracker's message is received and `received` at SQS
++  // receive, both before this hand-off (index.ts:895-898), and it passes the
++  // epochs down because this process is the one that sees started/completed.
++  // Without them stageMs("received", "started") and
++  // stageMs("observed", "broadcast") are permanently undefined here, which
++  // left the in-process queue leg measured nowhere (index.ts skips the
++  // dispatch histogram for this target) and left the headline observed ->
++  // broadcast histogram with no in-process series at all. Unlike the k8s-job
++  // branch there is no cross-process hand-off to preserve, so the epochs are
++  // re-marked rather than re-derived. A caller that starts the run itself
++  // rather than receiving it has no earlier anchor, so the hand-off is the
++  // receive stamp in that case.
++  if (observedAt !== undefined) {
++    latency.mark("observed", observedAt);
++  }
++  latency.mark("received", receivedAt ?? Date.now());
    const startTime = Date.now();
  
 -  console.log("[Executor:InProcess] Starting workflow execution");
@@ -199,7 +433,7 @@ index d3ee04bff..4bbe9b8a2 100644
    console.log(`[Executor:InProcess] Workflow ID: ${workflowId}`);
    console.log(`[Executor:InProcess] Execution ID: ${executionId}`);
  
-@@ -84,6 +92,10 @@ export async function executeInProcess(params: {
+@@ -84,6 +117,10 @@ export async function executeInProcess(params: {
      // to "use start()" only applies inside the Next runtime. Tradeoff: there is
      // no checkpoint/resume, so a crash mid-run leaves the row "running" until a
      // sweeper closes it - tracked separately from this dedup work.
@@ -210,30 +444,58 @@ index d3ee04bff..4bbe9b8a2 100644
      const result = await executeWorkflow(
        buildExecutorInput(workflow, {
          triggerInput: input,
-@@ -92,8 +104,18 @@ export async function executeInProcess(params: {
+@@ -92,8 +129,31 @@ export async function executeInProcess(params: {
        })
      );
  
 +    latency.mark("completed");
      const duration = Date.now() - startTime;
 -    console.log(`[Executor:InProcess] Completed in ${duration}ms`);
-+    recordInProcessLatency({
-+      latency,
-+      workflowId,
-+      executionId,
-+      triggerType,
-+      totalMs: duration,
-+    });
++    // Wrapped so instrumentation cannot fail a run that succeeded. This call
++    // sits inside the try and before applyExecutionResult, so a throw here
++    // would reach the catch and write status "error" for a run that completed -
++    // and updateScheduleStatus has no terminal-state filter, so a scheduled run
++    // would be recorded as failed with runCount never incremented. Observability
++    // must not be able to fail a transaction, so it must not be able to fail a
++    // successful workflow either.
++    try {
++      recordInProcessLatency({
++        latency,
++        workflowId,
++        executionId,
++        triggerType,
++      });
++    } catch (latencyError) {
++      console.error(
++        "[Executor:InProcess] Latency instrumentation failed (run unaffected):",
++        latencyError
++      );
++    }
 +    console.log(
 +      `[Executor:InProcess] Completed in ${duration}ms correlationId=${latency.correlationId}`
 +    );
  
      // executeWorkflow is the authoritative writer of the terminal status (with
      // reconciliation and richer fields). applyExecutionResult is a guarded
-@@ -113,8 +135,11 @@ export async function executeInProcess(params: {
+@@ -113,8 +173,26 @@ export async function executeInProcess(params: {
      const errorMessage =
        error instanceof Error ? error.message : "Unknown error";
  
++    // Latency instrumentation (issue #2289): discard this run's broadcast
++    // marker if the write path left one and the run then failed - the success
++    // path's takeBroadcastMarker never fires on this route, so without this a
++    // failed in-process run leaks its per-execution marker file into a
++    // weeks-long pod's emptyDir. Deliberately cleanup only: no latency stage
++    // is recorded on the failure path, so the histograms keep counting only
++    // runs that reached a terminal state. The executor's startup
++    // sweepBroadcastMarkers covers the remaining failure mode, a process
++    // killed before this catch can run.
++    try {
++      takeBroadcastMarker(executionId);
++    } catch {
++      // Never let marker cleanup mask the run's own error.
++    }
++
 +    // "completed" is not marked on failure: the histogram must only count runs
 +    // that reached a terminal state, so a crash/failure is visible as a
 +    // missing series rather than a fast fake latency.
@@ -243,26 +505,37 @@ index d3ee04bff..4bbe9b8a2 100644
        errorMessage
      );
  
-@@ -134,3 +159,40 @@ export async function executeInProcess(params: {
+@@ -134,3 +212,80 @@ export async function executeInProcess(params: {
      }
    }
  }
 +
 +/**
 + * Latency instrumentation (issue #2289): emit the receive->completed histogram
-+ * for an in-process run that reached a terminal state, split by trigger and
-+ * target so slow producers vs slow runners are visible independently. The
-+ * structured stage log line is emitted here (received/started/completed with
-+ * per-stage durations) for the same run.
++ * for an in-process run that reached a terminal state, split by trigger,
++ * target and stage so slow producers vs slow runners are visible
++ * independently. The structured stage log line is emitted here
++ * (received/started/completed with per-stage durations) for the same run.
++ *
++ * The broadcast stage is read back from the sidecar marker the write path
++ * dropped at the broadcast point (same process, engine already returned): the
++ * observed -> broadcast histogram - the interval issue #2289 exists for - is
++ * recorded here when both endpoints are known.
 + */
 +function recordInProcessLatency(params: {
 +  latency: ExecutionLatency;
 +  workflowId: string;
 +  executionId: string;
-+  triggerType: string;
-+  totalMs: number;
++  triggerType: ApiExecuteTriggerType;
 +}): void {
-+  const { latency, workflowId, executionId, triggerType, totalMs } = params;
++  const { latency, workflowId, executionId, triggerType } = params;
++  // The write path marked its broadcast into the per-execution sidecar; take
++  // it (read-and-discard for exactly this execution id) now that the run has
++  // returned and the marker can only belong to this execution.
++  const marker = takeBroadcastMarker(executionId);
++  if (marker && marker.executionId === executionId) {
++    latency.mark("broadcast", marker.broadcastAt);
++  }
 +  const queueToStartMs = latency.stageMs("received", "started");
 +  if (queueToStartMs !== undefined) {
 +    getMetricsCollector().recordLatency(
@@ -271,24 +544,84 @@ index d3ee04bff..4bbe9b8a2 100644
 +      {
 +        [LabelKeys.TRIGGER_TYPE]: triggerType,
 +        [LabelKeys.DISPATCH_TARGET]: "in-process",
-+        [LabelKeys.CORRELATION_ID]: latency.correlationId,
++        [LabelKeys.STAGE]: "started",
 +      }
 +    );
 +  }
-+  getMetricsCollector().recordLatency(MetricNames.EXECUTOR_EXECUTION_LATENCY, totalMs, {
-+    [LabelKeys.TRIGGER_TYPE]: triggerType,
-+    [LabelKeys.DISPATCH_TARGET]: "in-process",
-+    [LabelKeys.CORRELATION_ID]: latency.correlationId,
-+  });
-+  console.log(
-+    latency.summaryLine({ workflowId, executionId, triggerType, dispatchTarget: "in-process" })
-+  );
++  // receive -> terminal, the interval METRICS_REFERENCE.md documents for this
++  // metric, rather than this process's own lifetime: the executor's receive
++  // stamp is the anchor (threaded in as latencyEpochs), so the in-process
++  // series means the same thing as the k8s-job series that
++  // observation-applier.ts records from KH_RECEIVED_AT. Measuring from the
++  // hand-off instead would silently exclude the executor-side pre-dispatch
++  // work and put a second interval in the same histogram.
++  const totalMs = latency.totalMs();
++  if (totalMs !== undefined) {
++    getMetricsCollector().recordLatency(
++      MetricNames.EXECUTOR_EXECUTION_LATENCY,
++      totalMs,
++      {
++        [LabelKeys.TRIGGER_TYPE]: triggerType,
++        [LabelKeys.DISPATCH_TARGET]: "in-process",
++        [LabelKeys.STAGE]: "completed",
++      }
++    );
++  }
++  // Guard on the *raw* delta before recording. stageMs() clamps to 0, and
++  // `observed` is stamped in the tracker pod while `broadcast` is stamped in
++  // this one, so a tracker clock running ahead yields a negative delta that
++  // clamping would turn into a real-looking 0 ms sample. latency-observations
++  // drops a negative interval for the k8s-job series, so clamping here would
++  // make the two series in one histogram disagree on `_count` for the same skew.
++  const obsToBroadcast = latency.rawStageMs("observed", "broadcast");
++  if (obsToBroadcast !== undefined && obsToBroadcast >= 0) {
++    getMetricsCollector().recordLatency(
++      MetricNames.EXECUTOR_BROADCAST_LATENCY,
++      obsToBroadcast,
++      {
++        [LabelKeys.TRIGGER_TYPE]: triggerType,
++        [LabelKeys.DISPATCH_TARGET]: "in-process",
++      }
++    );
++  }
++  latency.emitLog({ workflowId, executionId, triggerType, dispatchTarget: "in-process" });
 +}
 diff --git a/keeperhub-executor/index.ts b/keeperhub-executor/index.ts
-index 56da206ec..f30662256 100644
+index 56da206ec..fa6c8a480 100644
 --- a/keeperhub-executor/index.ts
 +++ b/keeperhub-executor/index.ts
-@@ -77,6 +77,7 @@ import {
+@@ -61,6 +61,8 @@ import { resolveDispatchTarget } from "./execution-mode";
+ import { checkWorkflowFeaturesForExecutor } from "./feature-guard";
+ import { executeInProcess } from "./in-process";
+ import { createWorkflowJob } from "./k8s-job";
++import { trackLatency } from "./lib/correlation-map";
++import { enableBroadcastMarkers, sweepBroadcastMarkers } from "./lib/broadcast-marker";
+ import {
+   claimPendingForExecution,
+   claimPhantomForExecution,
+@@ -69,14 +71,28 @@ import {
+   resolveToSkipped,
+ } from "./lib/db-helpers";
+ import { InFlightTracker } from "./lib/in-flight";
+-import { applyCounterDeltas, isIngestPayload } from "./lib/metrics-shipping";
++import {
++  applyCounterDeltas,
++  applyLatencyObservations,
++  isIngestPayload,
++} from "./lib/metrics-shipping";
++import { registerLatencyObservationApplier } from "./lib/observation-applier";
+ import { recordSkippedSample } from "./lib/terminal-counters";
+ import { toJsonSafe } from "./lib/serialize";
++// Bootstrap the workflow error context (async-local storage) for this
++// non-Next process: the engine enters the execution context through it and
++// markBroadcast() reads the execution id back from it to stamp the broadcast
++// sidecar. The executor Docker stage does not copy instrumentation.ts, so
++// there is no Next register() to register the storage - without this import
++// storage stays null and every in-process broadcast is dropped by the
++// executionId guard when the marker is read back.
++import "./lib/workflow-error-context-bootstrap";
+ import { executorMessageSchema } from "./message-schema";
+ import {
    assertHmacSecretSet,
    assertTurnkeyEnvForActiveWallets,
  } from "./startup-checks";
@@ -296,7 +629,7 @@ index 56da206ec..f30662256 100644
  import type { ExecutorMessage, ScheduleMessage } from "./types";
  
  const INGEST_MAX_BODY_BYTES = 256 * 1024;
-@@ -258,8 +259,9 @@ async function dispatchExecution(params: {
+@@ -258,8 +274,9 @@ async function dispatchExecution(params: {
    input: Record<string, unknown>;
    triggerType: ApiExecuteTriggerType;
    scheduleId?: string;
@@ -307,19 +640,32 @@ index 56da206ec..f30662256 100644
      params;
  
    switch (target) {
-@@ -271,6 +273,7 @@ async function dispatchExecution(params: {
+@@ -271,6 +288,11 @@ async function dispatchExecution(params: {
            input,
            triggerType,
            scheduleId,
 +          correlationId: latency?.correlationId,
++          latencyEpochs: {
++            receivedAt: latency?.at("received"),
++            observedAt: latency?.at("observed"),
++          },
          });
  
          console.log(
-@@ -310,12 +313,44 @@ async function dispatchExecution(params: {
+@@ -310,12 +332,65 @@ async function dispatchExecution(params: {
          triggerType,
          scheduleId,
          db,
 +        correlationId: latency?.correlationId,
++        // Same anchors the k8s-job branch passes: the in-process engine is the
++        // process that sees started/completed, so it records the timeline - but
++        // `observed` and `received` were stamped on this instance before the
++        // hand-off. Passing the id alone left the queue leg unmeasured and the
++        // observed -> broadcast interval with no in-process series at all.
++        latencyEpochs: {
++          receivedAt: latency?.at("received"),
++          observedAt: latency?.at("observed"),
++        },
        });
        break;
      }
@@ -335,32 +681,44 @@ index 56da206ec..f30662256 100644
 +  // summary and histograms (it sees started/completed, which a handed-off Job
 +  // never does), so it is excluded here to avoid a second, out-of-order line.
 +  if (latency && target !== "in-process") {
-+    latency.mark("dispatched");
-+    const queueToDispatchMs = latency.stageMs("received", "dispatched");
-+    if (queueToDispatchMs !== undefined) {
-+      getMetricsCollector().recordLatency(
-+        MetricNames.EXECUTOR_DISPATCH_LATENCY,
-+        queueToDispatchMs,
-+        {
-+          [LabelKeys.TRIGGER_TYPE]: triggerType,
-+          [LabelKeys.DISPATCH_TARGET]: target,
-+          [LabelKeys.CORRELATION_ID]: latency.correlationId,
-+        }
-+      );
-+    }
-+    console.log(
-+      latency.summaryLine({
++    // Wrapped so instrumentation cannot fail a dispatched execution. This block
++    // runs after createWorkflowJob returned, so a throw here reaches the
++    // processMessage catch and failExecutionAsSystemError flips the still-pending
++    // row to system_error -- while the transaction may already be on chain, and
++    // the runner's terminal write is then refused against that status. The Job
++    // exists by the time this block is entered, so a guarantee by audit of each
++    // call is not enough: nothing here may be allowed to throw.
++    try {
++      latency.mark("dispatched");
++      const queueToDispatchMs = latency.stageMs("received", "dispatched");
++      if (queueToDispatchMs !== undefined) {
++        getMetricsCollector().recordLatency(
++          MetricNames.EXECUTOR_DISPATCH_LATENCY,
++          queueToDispatchMs,
++          {
++            [LabelKeys.TRIGGER_TYPE]: triggerType,
++            [LabelKeys.DISPATCH_TARGET]: target,
++            [LabelKeys.STAGE]: "dispatched",
++          }
++        );
++      }
++      latency.emitLog({
 +        workflowId,
 +        executionId,
 +        triggerType,
 +        dispatchTarget: target,
-+      })
-+    );
++      });
++    } catch (latencyError) {
++      console.error(
++        "[Executor] Latency instrumentation failed (dispatch unaffected):",
++        latencyError
++      );
++    }
 +  }
  }
  
  type ConsumeClaimResult =
-@@ -351,11 +386,15 @@ function dropDuplicateDelivery(
+@@ -351,11 +426,15 @@ function dropDuplicateDelivery(
    );
  }
  
@@ -378,7 +736,7 @@ index 56da206ec..f30662256 100644
    );
  
    // Load the workflow and evaluate its lifecycle state in one round-trip.
-@@ -587,6 +626,7 @@ async function processExecutorMessage(message: ExecutorMessage): Promise<void> {
+@@ -587,6 +666,7 @@ async function processExecutorMessage(message: ExecutorMessage): Promise<void> {
          input: message.input,
          triggerType: "manual",
          scheduleId: undefined,
@@ -386,7 +744,7 @@ index 56da206ec..f30662256 100644
        });
      } catch (error) {
        // We claimed pending -> running above, so the phantom/pending backstop in
-@@ -715,6 +755,7 @@ async function processExecutorMessage(message: ExecutorMessage): Promise<void> {
+@@ -715,6 +795,7 @@ async function processExecutorMessage(message: ExecutorMessage): Promise<void> {
        input,
        triggerType,
        scheduleId: getScheduleId(message),
@@ -394,7 +752,7 @@ index 56da206ec..f30662256 100644
      });
    } catch (error) {
      // Don't leak the inserted row as 'pending' if dispatch fails. The
-@@ -808,7 +849,8 @@ export async function processMessage(
+@@ -808,7 +889,8 @@ export async function processMessage(
    message: Message,
    // The message processor is injectable so tests can drive the success and
    // failure branches without standing up the full executor pipeline.
@@ -404,7 +762,7 @@ index 56da206ec..f30662256 100644
  ): Promise<void> {
    if (!(message.Body && message.ReceiptHandle)) {
      console.error("[Executor] Invalid message:", message);
-@@ -824,6 +866,20 @@ export async function processMessage(
+@@ -824,6 +906,25 @@ export async function processMessage(
      return;
    }
  
@@ -422,10 +780,15 @@ index 56da206ec..f30662256 100644
 +  }
 +  latency.mark("received");
 +
++  // Latency observations from this run's runner pod arrive asynchronously
++  // over the metrics ingest; keep the timeline reachable by correlation id
++  // until they land (see lib/correlation-map.ts).
++  trackLatency(latency);
++
    // Authenticate + validate the message before it can drive a
    // fund-moving execution. In "warn" mode we record metrics but still process
    // (so shipping this ahead of every producer signing cannot cause an outage);
-@@ -867,7 +923,7 @@ export async function processMessage(
+@@ -867,7 +968,7 @@ export async function processMessage(
    }
  
    try {
@@ -434,57 +797,227 @@ index 56da206ec..f30662256 100644
  
      await sqs.send(
        new DeleteMessageCommand({
+@@ -949,6 +1050,25 @@ async function listen(): Promise<void> {
+   assertHmacSecretSet();
+   await assertTurnkeyEnvForActiveWallets(db);
+ 
++  // Latency instrumentation (issue #2289): clear broadcast markers left by a
++  // previous process before any run can start. Every file present at this
++  // point is a leftover from a process that died between broadcast and take -
++  // the in-process catch cannot have run for those, so a startup sweep is the
++  // only path that bounds the registry in a weeks-long pod. Runner pods mount
++  // their own emptyDir and are untouched.
++
++  // Gate the marker registry before any run can start: this process is a
++  // consumer (success take, failure catch, startup sweep), so it may populate.
++  // The Next app pod, which also serves in-process runs through
++  // executeViaApi, never calls this and therefore never writes a marker file.
++  enableBroadcastMarkers();
++  const sweptMarkers = sweepBroadcastMarkers();
++  if (sweptMarkers > 0) {
++    console.log(
++      `[Executor] Swept ${sweptMarkers} stale broadcast marker(s) at startup`
++    );
++  }
++
+   // Health check + metrics server
+   const healthServer = createServer((req, res) => {
+     if (req.url === "/health" && req.method === "GET") {
+@@ -1014,8 +1134,33 @@ async function listen(): Promise<void> {
+             return;
+           }
+           const { applied, skipped } = await applyCounterDeltas(body.deltas);
++          // Pod latency observations (issue #2289): fold them into the
++          // originating run's timeline and the central histograms. Never
++          // fails the ingest - a bad observation is skipped, not rejected.
++          let obsApplied = 0;
++          let obsSkipped = 0;
++          if (body.observations && body.observations.length > 0) {
++            // Wrapped so observations cannot fail an ingest whose counter
++            // deltas have already been applied: a throw here would answer 500
++            // after the deltas landed, and the sender would retry an ingest
++            // that was already half-committed. Losing a sample is the stated
++            // contract; double-counting a counter is not.
++            try {
++              const obs = applyLatencyObservations(body.observations);
++              obsApplied = obs.applied;
++              obsSkipped = obs.skipped;
++            } catch (observationError) {
++              console.error(
++                "[Executor] Latency observation ingest failed (counters unaffected):",
++                observationError
++              );
++              obsSkipped = body.observations.length;
++            }
++          }
+           res.writeHead(200, { "Content-Type": "application/json" });
+-          res.end(JSON.stringify({ applied, skipped }));
++          res.end(
++            JSON.stringify({ applied, skipped, obsApplied, obsSkipped })
++          );
+         } catch (error) {
+           console.error("[Executor] Metrics ingest failed:", error);
+           res.writeHead(500);
+@@ -1029,6 +1174,9 @@ async function listen(): Promise<void> {
+     res.end();
+   });
+ 
++  // Latency observations from runner pods arrive on the metrics ingest;
++  // register the applier before the server can receive any.
++  registerLatencyObservationApplier();
+   healthServer.listen(CONFIG.healthPort, () => {
+     console.log(
+       `[Executor] Health check server listening on port ${CONFIG.healthPort}`
+diff --git a/keeperhub-executor/k8s-job.test.ts b/keeperhub-executor/k8s-job.test.ts
+index 091f21c8b..d8e07b8e5 100644
+--- a/keeperhub-executor/k8s-job.test.ts
++++ b/keeperhub-executor/k8s-job.test.ts
+@@ -459,6 +459,55 @@ describe("createWorkflowJob", () => {
+     expect(drainMs).toBeLessThan(deadlineMs);
+   });
+ 
++  it("propagates a label-safe correlation id to the Job env and labels", async () => {
++    await createWorkflowJob({
++      workflowId: "wf-1",
++      executionId: "exec-1234abcd",
++      input: {},
++      triggerType: "event",
++      correlationId: "abcd1234efgh5678",
++      latencyEpochs: { receivedAt: 1_000, observedAt: 500 },
++    });
++
++    const job = getSubmittedJob();
++    expect(job.metadata?.labels?.["correlation-id"]).toBe("abcd1234efgh5678");
++    const envVars = getJobEnvVars(job);
++    expect(getEnvVar(envVars, "KH_CORRELATION_ID")).toBe("abcd1234efgh5678");
++    expect(getEnvVar(envVars, "KH_RECEIVED_AT")).toBe("1000");
++    expect(getEnvVar(envVars, "KH_OBSERVED_AT")).toBe("500");
++  });
++
++  it("never puts a label-unsafe correlation id on the Job", async () => {
++    // A Kubernetes label value caps at 63 characters with a restricted
++    // charset; an invalid value fails Job creation, which would turn a bad
++    // correlation id into a workflow that never runs.
++    await createWorkflowJob({
++      workflowId: "wf-1",
++      executionId: "exec-1234abcd",
++      input: {},
++      triggerType: "event",
++      correlationId: `bad/${"a".repeat(70)}`,
++    });
++
++    const job = getSubmittedJob();
++    expect(job.metadata?.labels?.["correlation-id"]).toBeUndefined();
++    expect(getEnvVar(getJobEnvVars(job), "KH_CORRELATION_ID")).toBeUndefined();
++  });
++
++  it("omits the latency env anchors when no stage stamps are supplied", async () => {
++    await createWorkflowJob({
++      workflowId: "wf-1",
++      executionId: "exec-1234abcd",
++      input: {},
++      triggerType: "schedule",
++    });
++
++    const envVars = getJobEnvVars(getSubmittedJob());
++    expect(envVars.find((v) => v.name === "KH_CORRELATION_ID")).toBeUndefined();
++    expect(envVars.find((v) => v.name === "KH_RECEIVED_AT")).toBeUndefined();
++    expect(envVars.find((v) => v.name === "KH_OBSERVED_AT")).toBeUndefined();
++  });
++
+   it("caps the runner heap below the container memory limit", async () => {
+     await createWorkflowJob({
+       workflowId: "wf-1",
 diff --git a/keeperhub-executor/k8s-job.ts b/keeperhub-executor/k8s-job.ts
-index a00888461..cba6b227d 100644
+index b363bf796..0eb7b8a47 100644
 --- a/keeperhub-executor/k8s-job.ts
 +++ b/keeperhub-executor/k8s-job.ts
-@@ -99,8 +99,11 @@ export async function createWorkflowJob(params: {
+@@ -5,6 +5,7 @@ import {
+   type V1Job,
+ } from "@kubernetes/client-node";
+ import { CONFIG } from "./config";
++import { isSafeCorrelationId } from "./latency";
+ import { getRunnerSystemEnvVars } from "./runner-env";
+ 
+ const kc = new KubeConfig();
+@@ -99,8 +100,23 @@ export async function createWorkflowJob(params: {
    input: Record<string, unknown>;
    triggerType: string;
    scheduleId?: string;
 +  /** Latency correlation (issue #2289): the id minted at SQS receive. */
 +  correlationId?: string;
++  /** Latency observation anchors (issue #2289): stage timestamps for the pod. */
++  latencyEpochs?: { receivedAt?: number; observedAt?: number };
  }): Promise<V1Job> {
 -  const { workflowId, executionId, input, triggerType, scheduleId } = params;
-+  const { workflowId, executionId, input, triggerType, scheduleId, correlationId } =
++  const { workflowId, executionId, input, triggerType, scheduleId, correlationId, latencyEpochs } =
 +    params;
++  // A correlation id reaches the Job two ways: KH_CORRELATION_ID on the
++  // container and the "correlation-id" metadata label. A Kubernetes label
++  // value caps at 63 characters, must start and end alphanumeric and admits
++  // only [A-Za-z0-9_.-] in between; an over-long or slash-bearing id fails Job
++  // creation, which would turn a bad correlation id into a workflow that never
++  // runs. ExecutionLatency (latency.ts) already falls back to a locally minted
++  // id, so this only rejects an id that bypassed it - the same belt-and-braces
++  // posture as SAFE_EXECUTION_ID at the filesystem boundary.
++  const jobCorrelationId =
++    correlationId && isSafeCorrelationId(correlationId) ? correlationId : undefined;
    // Prefix with "keeperhub-" so the runner pod is captured by the Loki
    // security alert rules, which match pod=~".*keeperhub.*" (KEEP-612).
    // executeWorkflow -- and its content-scanner emit -- runs inside this pod
-@@ -114,6 +117,12 @@ export async function createWorkflowJob(params: {
+@@ -114,6 +130,21 @@ export async function createWorkflowJob(params: {
      { name: "EXECUTION_ID", value: executionId },
      { name: "WORKFLOW_INPUT", value: JSON.stringify(input) },
      { name: "TRIGGER_TYPE", value: triggerType },
 +    // Latency correlation (issue #2289): the runner pod inherits the id minted
 +    // at SQS receive, so its engine-level logs can be joined to the executor's
-+    // receive/dispatch stages on one key.
-+    ...(correlationId
-+      ? [{ name: "KH_CORRELATION_ID", value: correlationId }]
++    // receive/dispatch stages on one key. KH_RECEIVED_AT / KH_OBSERVED_AT let
++    // the pod ship point latency observations back over the metrics ingest
++    // (histogram observations cannot be merged across pods; point samples
++    // can).
++    ...(jobCorrelationId
++      ? [{ name: "KH_CORRELATION_ID", value: jobCorrelationId }]
++      : []),
++    ...(latencyEpochs?.receivedAt !== undefined
++      ? [{ name: "KH_RECEIVED_AT", value: String(latencyEpochs.receivedAt) }]
++      : []),
++    ...(latencyEpochs?.observedAt !== undefined
++      ? [{ name: "KH_OBSERVED_AT", value: String(latencyEpochs.observedAt) }]
 +      : []),
      // With readOnlyRootFilesystem the only writable path is the /tmp emptyDir
      // below. tsx/esbuild and any plugin temp writes resolve through TMPDIR, so
      // point it there to keep the runner working under the hardened context.
-@@ -171,6 +180,7 @@ export async function createWorkflowJob(params: {
+@@ -175,6 +206,7 @@ export async function createWorkflowJob(params: {
      "workflow-id": workflowId,
      "execution-id": executionId,
      "trigger-type": triggerType,
-+    ...(correlationId ? { "correlation-id": correlationId } : {}),
++    ...(jobCorrelationId ? { "correlation-id": jobCorrelationId } : {}),
    };
  
    if (scheduleId) {
 diff --git a/keeperhub-executor/latency.test.ts b/keeperhub-executor/latency.test.ts
 new file mode 100644
-index 000000000..f794e3f50
+index 000000000..e4210cb42
 --- /dev/null
 +++ b/keeperhub-executor/latency.test.ts
-@@ -0,0 +1,215 @@
-+import { describe, expect, it } from "vitest";
+@@ -0,0 +1,424 @@
++import { beforeEach, describe, expect, it, vi } from "vitest";
 +import {
 +  ExecutionLatency,
 +  generateCorrelationId,
++  isRepresentableEpochMs,
 +} from "./latency";
 +import { executorMessageSchema } from "./message-schema";
++import { logInfo } from "../lib/logging";
 +import { LabelKeys, MetricNames } from "../lib/metrics/types";
++
++vi.mock("../lib/logging", () => ({ logInfo: vi.fn() }));
++
++const logInfoMock = vi.mocked(logInfo);
++
++beforeEach(() => {
++  logInfoMock.mockClear();
++});
 +
 +describe("generateCorrelationId", () => {
 +  it("returns a 16-hex-char id", () => {
@@ -567,33 +1100,70 @@ index 000000000..f794e3f50
 +    );
 +  });
 +
-+  it("emits a key=value summary line with context", () => {
++  it("emits the canonical structured latency line via logInfo", () => {
 +    const latency = new ExecutionLatency("corr-1");
 +    latency.mark("received", 0);
 +    latency.mark("started", 50);
 +    latency.mark("completed", 200);
 +
-+    const line = latency.summaryLine({
++    latency.emitLog({
 +      workflowId: "wf-1",
 +      executionId: "exec-1",
 +      triggerType: "event",
 +      dispatchTarget: "in-process",
 +    });
 +
-+    expect(line).toContain("[Executor:Latency]");
-+    expect(line).toContain("correlationId=corr-1");
-+    expect(line).toContain("workflowId=wf-1");
-+    expect(line).toContain("executionId=exec-1");
-+    expect(line).toContain("triggerType=event");
-+    expect(line).toContain("dispatchTarget=in-process");
-+    expect(line).toContain("receivedAt=");
-+    expect(line).toContain("completedAt=");
-+    expect(line).toContain("queueToStartMs=50");
-+    expect(line).toContain("totalMs=200");
-+    // Grep-parsable: exactly one space between key=value tokens, no raw objects.
-+    expect(line.split(" ")).toEqual(
-+      expect.arrayContaining(["correlationId=corr-1", "totalMs=200"])
-+    );
++    expect(logInfoMock).toHaveBeenCalledTimes(1);
++    const [message, labels] = logInfoMock.mock.calls[0];
++    expect(message).toBe("execution latency stages");
++    expect(labels).toMatchObject({
++      component: "executor_latency",
++      correlation_id: "corr-1",
++      workflow_id: "wf-1",
++      execution_id: "exec-1",
++      trigger_type: "event",
++      dispatch_target: "in-process",
++      receivedAt: new Date(0).toISOString(),
++      startedAt: new Date(50).toISOString(),
++      completedAt: new Date(200).toISOString(),
++      queueToStartMs: "50",
++      totalMs: "200",
++    });
++  });
++
++  it("carries the observed -> broadcast duration in the log line", () => {
++    const latency = new ExecutionLatency("corr-obs");
++    latency.mark("observed", 0);
++    latency.mark("received", 100);
++    latency.mark("started", 200);
++    latency.mark("broadcast", 250);
++    latency.mark("completed", 300);
++
++    latency.emitLog({
++      workflowId: "wf-1",
++      executionId: "exec-1",
++      triggerType: "event",
++      dispatchTarget: "in-process",
++    });
++
++    const [, labels] = logInfoMock.mock.calls[0];
++    expect(labels).toMatchObject({
++      observedAt: new Date(0).toISOString(),
++      broadcastAt: new Date(250).toISOString(),
++      observed_to_broadcast_ms: "250",
++    });
++    // Stage ordering follows STAGE_ORDER.
++    const keys = Object.keys(labels ?? {});
++    expect(keys.indexOf("observedAt")).toBeLessThan(keys.indexOf("receivedAt"));
++    expect(keys.indexOf("receivedAt")).toBeLessThan(keys.indexOf("broadcastAt"));
++  });
++
++  it("derives the #2289 observed -> broadcast interval only when both are marked", () => {
++    const latency = new ExecutionLatency();
++    latency.mark("observed", 1_000);
++    expect(latency.broadcastMs()).toBeUndefined(); // never broadcast
++    latency.mark("broadcast", 4_250);
++    expect(latency.broadcastMs()).toBe(3_250);
 +  });
 +
 +  it("keeps the ordering contract: skipped stages are simply absent", () => {
@@ -626,22 +1196,24 @@ index 000000000..f794e3f50
 +    expect(fields.observedAt).toBe(new Date(1_000).toISOString());
 +  });
 +
-+  it("emits observed in the summary line before received", () => {
++  it("emits observed before received in the log line", () => {
 +    const latency = new ExecutionLatency("corr-obs");
 +    latency.mark("observed", 0);
 +    latency.mark("received", 100);
 +    latency.mark("started", 200);
 +    latency.mark("completed", 300);
-+    const line = latency.summaryLine({
++
++    latency.emitLog({
 +      workflowId: "wf-1",
 +      executionId: "exec-1",
 +      triggerType: "event",
 +      dispatchTarget: "in-process",
 +    });
-+    expect(line.indexOf("observedAt=")).toBeLessThan(
-+      line.indexOf("receivedAt=")
-+    );
-+    expect(line).toContain("correlationId=corr-obs");
++
++    const [, labels] = logInfoMock.mock.calls[0];
++    const keys = Object.keys(labels ?? {});
++    expect(keys.indexOf("observedAt")).toBeLessThan(keys.indexOf("receivedAt"));
++    expect(labels).toMatchObject({ correlation_id: "corr-obs" });
 +  });
 +});
 +
@@ -651,11 +1223,86 @@ index 000000000..f794e3f50
 +  it("exposes the executor latency metric names", () => {
 +    expect(MetricNames.EXECUTOR_DISPATCH_LATENCY).toBe("executor.dispatch.latency_ms");
 +    expect(MetricNames.EXECUTOR_EXECUTION_LATENCY).toBe("executor.execution.latency_ms");
++    expect(MetricNames.EXECUTOR_BROADCAST_LATENCY).toBe("executor.broadcast.latency_ms");
 +  });
 +
-+  it("exposes the correlation/dispatch labels", () => {
-+    expect(LabelKeys.CORRELATION_ID).toBe("correlation_id");
++  it("exposes the dispatch/stage labels and no correlation-id label", () => {
 +    expect(LabelKeys.DISPATCH_TARGET).toBe("dispatch_target");
++    expect(LabelKeys.STAGE).toBe("stage");
++    // The correlation id must never be a metric label (one time series per
++    // execution); it lives in logs and KH_CORRELATION_ID only.
++    expect(Object.values(LabelKeys)).not.toContain("correlation_id");
++  });
++});
++
++// The invariant this PR states for itself: observability must not be able to
++// fail a transaction. `new Date(1e16).toISOString()` throws RangeError, and
++// 1e16 is a plain finite JSON number every layer upstream accepts - so a
++// producer emitting microseconds reached the throw. On the in-process path it
++// landed in executeInProcess's catch and wrote status "error" for a run that
++// succeeded. These pin the guard that makes that impossible.
++describe("latency observation guards", () => {
++  const UNREPRESENTABLE = 1e16;
++  const MAX_DATE_EPOCH_MS = 8_640_000_000_000_000;
++
++  it("drops a stamp the Date constructor cannot represent", () => {
++    const latency = new ExecutionLatency("corr-guard");
++    expect(() => latency.mark("observed", UNREPRESENTABLE)).not.toThrow();
++    expect(latency.has("observed")).toBe(false);
++    expect(latency.at("observed")).toBeUndefined();
++  });
++
++  it("keeps a stamp at the edge of the representable window", () => {
++    const latency = new ExecutionLatency("corr-guard");
++    latency.mark("observed", MAX_DATE_EPOCH_MS);
++    expect(latency.toLogFields().observedAt).toBe(
++      new Date(MAX_DATE_EPOCH_MS).toISOString()
++    );
++  });
++
++  it("records no observed -> broadcast leg for a dropped stamp", () => {
++    const latency = new ExecutionLatency("corr-guard");
++    latency.mark("observed", UNREPRESENTABLE);
++    latency.mark("broadcast", 5_000);
++    // Absent, not fabricated: a stripped stamp must not surface as a 0ms leg.
++    expect(latency.broadcastMs()).toBeUndefined();
++  });
++
++  it("emits the log line without throwing on a dropped stamp", () => {
++    const latency = new ExecutionLatency("corr-guard");
++    latency.mark("observed", UNREPRESENTABLE);
++    latency.mark("received", 100);
++    latency.mark("completed", 200);
++
++    expect(() =>
++      latency.emitLog({
++        workflowId: "wf-1",
++        executionId: "exec-1",
++        triggerType: "event",
++        dispatchTarget: "k8s-job",
++      })
++    ).not.toThrow();
++
++    const [, labels] = logInfoMock.mock.calls[0];
++    expect(labels).toMatchObject({ correlation_id: "corr-guard" });
++    expect(labels?.observedAt).toBeUndefined();
++    expect(labels?.observed_to_broadcast_ms).toBeUndefined();
++  });
++
++  it("replaces a correlation id that cannot be a Kubernetes label value", () => {
++    // A 64-char value, a slash, a leading dash and an empty string all fail
++    // Job creation (k8s-job.ts writes the id into the Job's labels).
++    for (const unsafe of ["a".repeat(64), "bad/id", "-leading", ""]) {
++      expect(new ExecutionLatency(unsafe).correlationId).toMatch(
++        /^[0-9a-f]{16}$/
++      );
++    }
++  });
++
++  it("keeps a correlation id that is safe as a label value", () => {
++    expect(new ExecutionLatency("abcd1234efgh5678").correlationId).toBe(
++      "abcd1234efgh5678"
++    );
 +  });
 +});
 +
@@ -682,6 +1329,43 @@ index 000000000..f794e3f50
 +    expect(parsed.success).toBe(true);
 +  });
 +
++  it("rejects a microsecond-scale observedAt (guards the producer contract)", () => {
++    // 1e16 is a plain finite JSON number: nothing upstream rejects it, and
++    // `new Date(1e16).toISOString()` throws RangeError downstream.
++    const parsed = executorMessageSchema.safeParse({
++      triggerType: "event",
++      workflowId: "wf-1",
++      userId: "u-1",
++      triggerData: {},
++      observedAt: 1e16,
++    });
++    expect(parsed.success).toBe(false);
++  });
++
++  it("rejects a fractional observedAt", () => {
++    const parsed = executorMessageSchema.safeParse({
++      triggerType: "event",
++      workflowId: "wf-1",
++      userId: "u-1",
++      triggerData: {},
++      observedAt: 1_000.5,
++    });
++    expect(parsed.success).toBe(false);
++  });
++
++  it("rejects a correlationId that cannot be a Kubernetes label value", () => {
++    for (const correlationId of ["a".repeat(64), "bad/id"]) {
++      const parsed = executorMessageSchema.safeParse({
++        triggerType: "event",
++        workflowId: "wf-1",
++        userId: "u-1",
++        triggerData: {},
++        correlationId,
++      });
++      expect(parsed.success).toBe(false);
++    }
++  });
++
 +  it("rejects a malformed observedAt (guards the producer contract)", () => {
 +    const parsed = executorMessageSchema.safeParse({
 +      triggerType: "event",
@@ -693,14 +1377,64 @@ index 000000000..f794e3f50
 +    expect(parsed.success).toBe(false);
 +  });
 +});
++
++describe("latency stage arithmetic (issue #2289 review)", () => {
++  it("rejects a negative epoch stamp", () => {
++    // No epoch-ms timestamp predates 1970. `Math.abs` alone admitted -1e15,
++    // which passed the schema in `warn` mode and then derived a ~1e15 ms
++    // observed->broadcast interval, polluting that label set's `_sum` until the
++    // pod restarted.
++    expect(isRepresentableEpochMs(-1)).toBe(false);
++    expect(isRepresentableEpochMs(-1e15)).toBe(false);
++    expect(isRepresentableEpochMs(1.5)).toBe(false);
++    expect(isRepresentableEpochMs(8_640_000_000_000_001)).toBe(false);
++    expect(isRepresentableEpochMs(0)).toBe(true);
++  });
++
++  it("drops a negative stamp rather than storing it", () => {
++    const latency = new ExecutionLatency("corr-negative");
++    latency.mark("observed", -1e15);
++    expect(latency.at("observed")).toBeUndefined();
++    expect(latency.has("observed")).toBe(false);
++  });
++
++  it("keeps the raw delta negative where stageMs clamps it to zero", () => {
++    // observed is stamped by the tracker pod and broadcast by the executor, so a
++    // tracker clock running ahead yields a negative delta. Recording the clamped
++    // value would be a fabricated 0 ms sample, and the k8s-job series drops a
++    // negative interval for the same skew - so the two series in one histogram
++    // would disagree on `_count`.
++    const latency = new ExecutionLatency("corr-skew");
++    latency.mark("observed", 2_000);
++    latency.mark("broadcast", 1_500);
++    expect(latency.stageMs("observed", "broadcast")).toBe(0);
++    expect(latency.rawStageMs("observed", "broadcast")).toBe(-500);
++  });
++
++  it("rawStageMs agrees with stageMs when the stages are in order", () => {
++    const latency = new ExecutionLatency("corr-in-order");
++    latency.mark("observed", 2_000);
++    latency.mark("broadcast", 2_500);
++    expect(latency.rawStageMs("observed", "broadcast")).toBe(500);
++    expect(latency.stageMs("observed", "broadcast")).toBe(500);
++  });
++
++  it("rawStageMs is undefined unless both stages are marked", () => {
++    const latency = new ExecutionLatency("corr-partial");
++    latency.mark("observed", 2_000);
++    expect(latency.rawStageMs("observed", "broadcast")).toBeUndefined();
++  });
++});
 \ No newline at end of file
 diff --git a/keeperhub-executor/latency.ts b/keeperhub-executor/latency.ts
 new file mode 100644
-index 000000000..f9fbf3c83
+index 000000000..94822319e
 --- /dev/null
 +++ b/keeperhub-executor/latency.ts
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,261 @@
 +import { randomBytes } from "node:crypto";
++
++import { logInfo } from "../lib/logging";
 +
 +/**
 + * End-to-end execution latency instrumentation (issue #2289).
@@ -721,10 +1455,11 @@ index 000000000..f9fbf3c83
 + * overwrite the first observation. Durations are derived from the recorded
 + * marks rather than stored, keeping the class a pure observer.
 + *
-+ * The `recordExecutionLatency` helper emits BOTH a structured log line (so the
-+ * correlation id and per-stage timestamps land in Loki / CloudWatch and a run
-+ * can be traced across executor, runner pod and API) AND a histogram sample via
-+ * the collector's existing recordLatency surface.
++ * The `emitLatencyLog` helper in index.ts / in-process.ts emits the canonical
++ * structured line (via lib/logging logInfo) carrying the correlation id and
++ * per-stage timestamps, so a run is traceable across tracker, executor and
++ * runner pod logs. Histogram samples go through the collector's recordLatency
++ * surface, labeled by stage/trigger/target only - never by correlation id.
 + */
 +
 +export type LatencyStage =
@@ -747,23 +1482,101 @@ index 000000000..f9fbf3c83
 +];
 +
 +/**
-+ * 16 hex chars from a CSPRNG. Short enough for labels and URLs, unique enough
-+ * to correlate a single execution across systems. No dependency beyond node:crypto.
++ * 16 hex chars from a CSPRNG. Unique enough to correlate a single execution
++ * across systems via logs and the KH_CORRELATION_ID env var. Deliberately NOT
++ * used as a metric label: a fresh value per execution would create one time
++ * series per run (#2289 rules out even per-workflow labels as a metrics-cost
++ * problem). It travels in the structured log lines instead, where it already
++ * joins the tracker, executor and runner on one key. No dependency beyond
++ * node:crypto.
 + */
 +export function generateCorrelationId(): string {
 +  return randomBytes(8).toString("hex");
++}
++
++/**
++ * The largest epoch-ms stamp the platform can render as a Date, and the lower
++ * bound an epoch can have at all. `new Date(ms)` is valid for |ms| <= 8.64e15
++ * and `toISOString()` throws RangeError outside that window - a producer
++ * emitting microseconds (1e16) is a plain finite JSON number that lands there.
++ * Negative stamps are rejected too: no epoch-ms timestamp predates 1970, so a
++ * negative value is a corrupt or hostile producer rather than a real time, and
++ * `Math.abs` alone would have admitted `-1e15` and derived a ~1e15 ms interval
++ * from it into the broadcast histogram, polluting that label set's `_sum` until
++ * the pod restarts. One definition shared by the message schema (the producer
++ * contract) and the consumers (the guard that stops a bad stamp from failing a
++ * run): observability must not be able to fail a transaction.
++ */
++export const MAX_DATE_EPOCH_MS = 8_640_000_000_000_000;
++
++export function isRepresentableEpochMs(value: number): boolean {
++  return (
++    Number.isFinite(value) &&
++    Number.isInteger(value) &&
++    value >= 0 &&
++    value <= MAX_DATE_EPOCH_MS
++  );
++}
++
++/** ISO-8601 for a stamp, or undefined when it is outside that window. */
++function toIsoString(at: number): string | undefined {
++  return isRepresentableEpochMs(at) ? new Date(at).toISOString() : undefined;
++}
++
++/**
++ * A correlation id that is safe everywhere it travels: the "correlation-id"
++ * label on the runner's Job (a Kubernetes label value caps at 63 characters,
++ * must start and end alphanumeric, and admits only [A-Za-z0-9_.-] in between),
++ * the KH_CORRELATION_ID env var and the structured log line.
++ * generateCorrelationId() mints 16 hex chars, well inside this; the allowlist
++ * exists for ids reused from the trigger message, which a producer supplies.
++ * Defined once so the label, the env var and the logs stay in step.
++ */
++export const SAFE_CORRELATION_ID =
++  /^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$/;
++
++export function isSafeCorrelationId(value: string): boolean {
++  return SAFE_CORRELATION_ID.test(value);
 +}
 +
 +export class ExecutionLatency {
 +  readonly correlationId: string;
 +  private readonly marks = new Map<LatencyStage, number>();
 +
-+  constructor(correlationId: string = generateCorrelationId()) {
-+    this.correlationId = correlationId;
++  /**
++   * An id that cannot be used where it is carried - absent, or not a valid
++   * Kubernetes label value - is discarded in favour of a locally minted one,
++   * exactly as if the message had not carried one. The id is pure
++   * observability metadata and it is written straight into the runner Job's
++   * metadata labels (k8s-job.ts), where an over-long or slash-bearing value
++   * fails Job creation, turning a bad correlation id into a workflow that
++   * never runs. Falling back keeps the run, keeps the label valid and keeps
++   * the logs joinable on a local id.
++   */
++  constructor(correlationId?: string) {
++    this.correlationId =
++      correlationId !== undefined && isSafeCorrelationId(correlationId)
++        ? correlationId
++        : generateCorrelationId();
 +  }
 +
-+  /** Record a stage at the given epoch ms. First mark wins; later calls no-op. */
++  /**
++   * Record a stage at the given epoch ms. First mark wins; later calls no-op.
++   *
++   * A stamp the platform cannot represent as a Date is dropped rather than
++   * stored. Stage timestamps are rendered with `new Date(at).toISOString()` in
++   * toLogFields, which throws RangeError outside the representable window (a
++   * producer emitting microseconds, 1e16, lands there). On the in-process path
++   * that throw lands in executeInProcess's catch and writes status "error" for
++   * a run that succeeded; on the k8s-job path it lands after the Job is already
++   * created. An unusable stamp costs the observation, never the transaction,
++   * and a run with no observed stamp simply records no observed->broadcast
++   * interval instead of a fabricated zero.
++   */
 +  mark(stage: LatencyStage, at: number = Date.now()): void {
++    if (!isRepresentableEpochMs(at)) {
++      return;
++    }
 +    if (!this.marks.has(stage)) {
 +      this.marks.set(stage, at);
 +    }
@@ -794,6 +1607,24 @@ index 000000000..f9fbf3c83
 +  }
 +
 +  /**
++   * Duration between two stages *without* clamping, or undefined unless both
++   * are marked. stageMs() exists for rendering, where a negative interval is
++   * meaningless and 0 is the friendlier output. Recording is the other case:
++   * `observed` is stamped by the event-tracker pod and `broadcast` by the
++   * executor pod, so a tracker clock running ahead produces a negative raw
++   * delta that has to be dropped rather than reported as a real-looking 0 ms.
++   * latency-observations.ts already discards a negative interval for the
++   * k8s-job series, and clamping here instead would make the two series in one
++   * histogram disagree on `_count` for the same skew.
++   */
++  rawStageMs(from: LatencyStage, to: LatencyStage): number | undefined {
++    const a = this.marks.get(from);
++    const b = this.marks.get(to);
++    if (a === undefined || b === undefined) return undefined;
++    return b - a;
++  }
++
++  /**
 +   * JSON-safe field object for log emission. Only marked stages appear; each
 +   * timestamp is an ISO string. Durations are milliseconds.
 +   */
@@ -804,7 +1635,10 @@ index 000000000..f9fbf3c83
 +    for (const stage of STAGE_ORDER) {
 +      const at = this.marks.get(stage);
 +      if (at !== undefined) {
-+        fields[`${stage}At`] = new Date(at).toISOString();
++        const iso = toIsoString(at);
++        if (iso !== undefined) {
++          fields[`${stage}At`] = iso;
++        }
 +      }
 +    }
 +    const queueToStart = this.stageMs("received", "started");
@@ -815,43 +1649,1800 @@ index 000000000..f9fbf3c83
 +  }
 +
 +  /**
-+   * Single-line structured summary matching the executor's JSON log shape
-+   * (`[Component] key=value ...`). Parsable with a plain key=value splitter.
++   * The interval #2289 exists for: trigger observed by the tracker to the
++   * transaction actually broadcast to the chain. Undefined until both stages
++   * are marked (legacy messages have no `observed`; non-write runs never
++   * broadcast).
 +   */
-+  summaryLine(params: {
++  broadcastMs(): number | undefined {
++    return this.stageMs("observed", "broadcast");
++  }
++
++  /**
++   * Emit the canonical structured latency line for this run via logInfo
++   * (lib/logging). The correlation id rides as a label so tracker, executor
++   * and runner logs join on one key; stage timestamps and derived durations
++   * ride as extra fields. Deliberately NOT mirrored into metric labels - a
++   * fresh id per execution would create one time series per run.
++   */
++  emitLog(params: {
 +    workflowId: string;
-+    executionId?: string;
++    executionId: string;
 +    triggerType: string;
 +    dispatchTarget: string;
-+  }): string {
++  }): void {
 +    const { workflowId, executionId, triggerType, dispatchTarget } = params;
-+    const fields = this.toLogFields();
-+    const parts = [
-+      "correlationId=" + this.correlationId,
-+      "workflowId=" + workflowId,
-+      "triggerType=" + triggerType,
-+      "dispatchTarget=" + dispatchTarget,
-+    ];
-+    if (executionId) parts.push("executionId=" + executionId);
-+    for (const [key, value] of Object.entries(fields)) {
-+      if (value !== undefined) parts.push(`${key}=${value}`);
++    const labels: Record<string, string> = {
++      component: "executor_latency",
++      correlation_id: this.correlationId,
++      workflow_id: workflowId,
++      execution_id: executionId,
++      trigger_type: triggerType,
++      dispatch_target: dispatchTarget,
++    };
++    const extras: Record<string, string> = {};
++    for (const [key, value] of Object.entries(this.toLogFields())) {
++      if (key !== "correlationId" && value !== undefined) {
++        extras[key] = String(value);
++      }
 +    }
-+    return `[Executor:Latency] ${parts.join(" ")}`;
++    const obsToBroadcast = this.broadcastMs();
++    if (obsToBroadcast !== undefined) {
++      extras.observed_to_broadcast_ms = String(obsToBroadcast);
++    }
++    logInfo("execution latency stages", { ...labels, ...extras });
 +  }
 +}
-\ No newline at end of file
+diff --git a/keeperhub-executor/lib/broadcast-marker.test.ts b/keeperhub-executor/lib/broadcast-marker.test.ts
+new file mode 100644
+index 000000000..8cc845813
+--- /dev/null
++++ b/keeperhub-executor/lib/broadcast-marker.test.ts
+@@ -0,0 +1,225 @@
++import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
++import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++
++// lib/metrics/collectors/prometheus.ts is server-only; stub it so the lazy
++// counter import inside broadcast-marker can resolve (same approach as
++// lib/metrics/__tests__/executor-latency.test.ts).
++vi.mock("server-only", () => ({}));
++
++// The marker dir is resolved at module load; point it at a scratch dir before
++// the first import. The error-context reader is storage-optional by design;
++// tests that need an execution id resolved from ALS register their own
++// AsyncLocalStorage (see the bootstrap test).
++const TMP = mkdtempSync(join(tmpdir(), "kh-broadcast-marker-test-"));
++process.env.KH_BROADCAST_MARKER_DIR = TMP;
++
++const {
++  markBroadcast,
++  peekBroadcastMarker,
++  takeBroadcastMarker,
++  getBroadcastCount,
++  getBroadcastMarkerPath,
++  currentExecutionId,
++  sweepBroadcastMarkers,
++  waitForBroadcastCounterForTests,
++  enableBroadcastMarkers,
++} = await import("./broadcast-marker");
++
++afterEach(() => {
++  rmSync(join(TMP, "exec-1.json"), { force: true });
++  rmSync(join(TMP, "exec-2.json"), { force: true });
++});
++
++afterAll(() => {
++  delete process.env.KH_BROADCAST_MARKER_DIR;
++  rmSync(TMP, { recursive: true, force: true });
++});
++
++describe("broadcast marker write gate (issue #2289 review, third pass)", () => {
++  it("writes no marker file in an ungated process, but still counts", () => {
++    // Default module state: the Next app pod imports the lib/web3 write
++    // paths and runs markBroadcast, but nothing in that process ever takes
++    // or sweeps a marker - so until a consumer calls enableBroadcastMarkers()
++    // (executor listen(), workflow-runner main()), a mark must not land a
++    // file. One file per execution for the pod's whole lifetime was the
++    // exact leak the startup sweep could not reach.
++    const before = getBroadcastCount();
++    markBroadcast("exec-ungated");
++    expect(getBroadcastCount()).toBe(before + 1);
++    expect(existsSync(getBroadcastMarkerPath("exec-ungated"))).toBe(false);
++  });
++
++  it("peek and take keep working in an ungated process (read-only consumers)", () => {
++    writeFileSync(
++      getBroadcastMarkerPath("exec-1"),
++      JSON.stringify({ executionId: "exec-1", broadcastAt: Date.now() }),
++      "utf-8"
++    );
++    // The gate controls writes only: a file that exists (pre-seeded, or
++    // written by the same process before a gate flip) stays readable.
++    expect(peekBroadcastMarker("exec-1")?.executionId).toBe("exec-1");
++  });
++});
++
++describe("broadcast marker (issue #2289 broadcast stage)", () => {
++  // The tests below exercise the consumer side (executor, runner) where the
++  // registry is populated: flip the gate once for the whole describe.
++  beforeAll(() => {
++    enableBroadcastMarkers();
++  });
++
++  it("records a broadcast when no marker exists yet", () => {
++    markBroadcast("exec-2");
++    expect(peekBroadcastMarker("exec-2")?.broadcastAt).toBeGreaterThan(0);
++  });
++
++  it("keeps the first broadcast when one run writes twice", () => {
++    // A workflow that approves and then swaps writes two markers for one
++    // execution id. ExecutionLatency.mark is first-wins, so the marker has to be
++    // too: with last-wins, stageMs("observed", "broadcast") would measure to the
++    // second broadcast and carry the approve's whole confirmation wait into the
++    // headline interval. Pre-seeded rather than two rapid markBroadcast calls,
++    // so the assertion cannot pass on Date.now() granularity alone.
++    const original = 1_700_000_000_000;
++    writeFileSync(
++      getBroadcastMarkerPath("exec-2"),
++      JSON.stringify({ executionId: "exec-2", broadcastAt: original }),
++      "utf-8"
++    );
++    markBroadcast("exec-2");
++    expect(peekBroadcastMarker("exec-2")?.broadcastAt).toBe(original);
++  });
++
++  it("resolves the execution id from the async-local workflow context", () => {
++    // No ALS registered in this test process -> undefined, never a throw.
++    expect(currentExecutionId()).toBeUndefined();
++  });
++
++  it("bumps the process-local counter on every broadcast", () => {
++    const before = getBroadcastCount();
++    markBroadcast("exec-1");
++    markBroadcast(undefined); // outside a run: counter only
++    expect(getBroadcastCount()).toBe(before + 2);
++  });
++
++  it("writes a per-execution marker file that peek reads back", () => {
++    const before = Date.now();
++    markBroadcast("exec-1");
++    const marker = peekBroadcastMarker("exec-1");
++    expect(marker).toBeDefined();
++    expect(marker!.executionId).toBe("exec-1");
++    expect(marker!.broadcastAt).toBeGreaterThanOrEqual(before);
++    expect(existsSync(getBroadcastMarkerPath("exec-1"))).toBe(true);
++  });
++
++  it("peek is non-destructive: take still reads the same record afterwards", () => {
++    markBroadcast("exec-1");
++    const peeked = peekBroadcastMarker("exec-1");
++    const taken = takeBroadcastMarker("exec-1");
++    expect(peeked).toEqual(taken);
++    // Consumed now.
++    expect(takeBroadcastMarker("exec-1")).toBeUndefined();
++  });
++
++  it("take removes only the requested execution's marker", () => {
++    markBroadcast("exec-1");
++    writeFileSync(
++      getBroadcastMarkerPath("exec-2"),
++      JSON.stringify({ executionId: "exec-2", broadcastAt: Date.now() }),
++      "utf-8"
++    );
++    expect(takeBroadcastMarker("exec-1")!.executionId).toBe("exec-1");
++    // Run B's marker is untouched: concurrent in-process executions cannot
++    // steal each other's sample (the fixed-filename defect class).
++    expect(peekBroadcastMarker("exec-2")!.executionId).toBe("exec-2");
++  });
++
++  it("tolerates a corrupt marker file", () => {
++    writeFileSync(getBroadcastMarkerPath("exec-1"), "not json", "utf-8");
++    expect(peekBroadcastMarker("exec-1")).toBeUndefined();
++    expect(takeBroadcastMarker("exec-1")).toBeUndefined();
++    // The corrupt file is consumed by take rather than left behind.
++    expect(existsSync(getBroadcastMarkerPath("exec-1"))).toBe(false);
++  });
++
++  it("rejects a marker whose content id does not match its filename", () => {
++    // A misfiled marker (exec-1.json carrying exec-2's record) must never
++    // reach a consumer: the reader-level check returns undefined, and take
++    // still consumes the garbage file so the cleanup paths stay bounded.
++    writeFileSync(
++      getBroadcastMarkerPath("exec-1"),
++      JSON.stringify({ executionId: "exec-2", broadcastAt: Date.now() }),
++      "utf-8"
++    );
++    expect(peekBroadcastMarker("exec-1")).toBeUndefined();
++    expect(takeBroadcastMarker("exec-1")).toBeUndefined();
++    expect(existsSync(getBroadcastMarkerPath("exec-1"))).toBe(false);
++  });
++
++  it("writes no marker file for an unsafe execution id, but still counts", () => {
++    // Path hardening: an id carrying a separator or traversal must never
++    // reach join() or rmSync. The broadcast itself still happened, so the
++    // process-local counter moves; the sidecar silently does not.
++    for (const bad of ["../escape", "a/b", "a\\\\b", "..", "a b", ""]) {
++      const before = getBroadcastCount();
++      markBroadcast(bad);
++      expect(getBroadcastCount()).toBe(before + 1);
++    }
++    // Nothing new landed in the registry dir (the afterEach cleanup would
++    // fail on an unexpected file name otherwise).
++    expect(existsSync(getBroadcastMarkerPath("../escape"))).toBe(false);
++  });
++
++  it("sweepBroadcastMarkers removes every marker and returns the count", () => {
++    markBroadcast("exec-1");
++    markBroadcast("exec-2");
++    writeFileSync(
++      getBroadcastMarkerPath("exec-stale"),
++      JSON.stringify({ executionId: "exec-stale", broadcastAt: Date.now() }),
++      "utf-8"
++    );
++    // Entries this module never wrote must survive the sweep untouched: the
++    // filter is part of the deletion contract, and MARKER_DIR is an
++    // unvalidated env var, so the sweep cannot go treating the directory's
++    // other contents as data.
++    writeFileSync(join(TMP, "keeper.txt"), "not a marker", "utf-8");
++    mkdirSync(join(TMP, "subdir"), { recursive: true });
++    writeFileSync(join(TMP, "subdir", "nested.json"), "{}", "utf-8");
++
++    expect(sweepBroadcastMarkers()).toBe(3);
++    expect(existsSync(getBroadcastMarkerPath("exec-1"))).toBe(false);
++    expect(existsSync(getBroadcastMarkerPath("exec-2"))).toBe(false);
++    expect(existsSync(getBroadcastMarkerPath("exec-stale"))).toBe(false);
++    expect(existsSync(join(TMP, "keeper.txt"))).toBe(true);
++    expect(existsSync(join(TMP, "subdir", "nested.json"))).toBe(true);
++    // A second sweep over the empty registry is a no-op returning 0.
++    expect(sweepBroadcastMarkers()).toBe(0);
++  });
++
++  it("sweepBroadcastMarkers returns 0 when the registry dir does not exist", () => {
++    // Fresh pod: no MARKER_DIR yet. Best-effort, never throws.
++    rmSync(TMP, { recursive: true, force: true });
++    expect(sweepBroadcastMarkers()).toBe(0);
++  });
++
++  it("increments the registered keeperhub_executor_broadcasts_total counter deterministically", async () => {
++    const { executorBroadcastsTotal } = await import(
++      "@/lib/metrics/collectors/prometheus"
++    );
++    // A mark here guarantees the lazy import has been requested in this test
++    // file's registry state, so the await below has a real promise to settle.
++    markBroadcast(undefined);
++    await waitForBroadcastCounterForTests();
++
++    const before = (await executorBroadcastsTotal.get()).values[0]?.value ?? 0;
++    markBroadcast("exec-1");
++    markBroadcast(undefined);
++    await waitForBroadcastCounterForTests();
++    const after = (await executorBroadcastsTotal.get()).values[0]?.value ?? 0;
++    // Deterministic resolution lets the test assert exactly, not a range:
++    // no other mark can land between the two reads within this test.
++    expect(after).toBe(before + 2);
++  });
++});
+diff --git a/keeperhub-executor/lib/broadcast-marker.ts b/keeperhub-executor/lib/broadcast-marker.ts
+new file mode 100644
+index 000000000..fcf441718
+--- /dev/null
++++ b/keeperhub-executor/lib/broadcast-marker.ts
+@@ -0,0 +1,347 @@
++/**
++ * Broadcast-stage marker for the executor latency instrumentation (issue #2289).
++ *
++ * The stage timestamp lives inside lib/web3 write paths, but the latency
++ * timeline is owned by this satellite's long-lived process. A web3 write
++ * executes inside a separate pod (or a separate engine call) with no handle on
++ * the `ExecutionLatency` instance, so the timestamp is handed over through a
++ * side channel and the executor applies it to the right run:
++ *
++ * 1. The write path calls markBroadcast() at the exact broadcast point.
++ * 2. markBroadcast() records {executionId, broadcastAt} into a per-execution
++ *    registry (KH_BROADCAST_MARKER_DIR, one file per execution id) and
++ *    increments the registered `keeperhub_executor_broadcasts_total` counter.
++ *    Per-execution file names exist because the executor runs up to
++ *    `maxMessages` (10) in-process executions concurrently
++ *    (Promise.allSettled in index.ts): with one fixed filename a later
++ *    broadcast could overwrite an earlier one before its run reads it back,
++ *    silently losing the sample. The counter ships to the executor with the
++ *    other counter deltas, so the broadcast stage stays observable even where
++ *    the per-run file cannot be read back at all (read-only fs). The write is
++ *    first-wins, deliberately matching `ExecutionLatency.mark`: a workflow
++ *    that approves and then swaps must report the interval to its *first*
++ *    broadcast, or the headline number includes the later step's confirmation
++ *    wait and the two ends of the interval measure different broadcasts.
++ * 3. After executeWorkflow() returns, the runner takes its own execution's
++ *    marker (read-and-discard for exactly its execution id) and includes the
++ *    stage in its structured completion log; the observation collector ships
++ *    the interval to the executor. Taking by explicit execution id is what
++ *    keeps concurrent in-process runs from stealing each other's marker.
++ *
++ * Writes are gated: only a process that also consumes the registry calls
++ * enableBroadcastMarkers() (the executor's listen() and the workflow-runner's
++ * entry), because a marker file is only useful where one of the three removal
++ * paths below can run. Everywhere else - the Next app pod above all, which
++ * serves executeViaApi for EXECUTION_MODE=process and the webhook and MCP
++ * routes - markBroadcast() increments the counters and writes nothing, so the
++ * registry stays bounded by construction rather than by cleanup.
++ *
++ * Removal paths inside a gated process, so no single failure mode can
++ * accumulate files: the runner's or the in-process success take
++ * (read-and-discard), the in-process failure catch (best-effort discard, so
++ * a run that broadcasts and then throws leaves nothing behind), and a sweep
++ * of the whole registry at executor startup (sweepBroadcastMarkers, called
++ * from the executor's listen() before any run can start - covers a process
++ * killed mid-run, where no in-process handler ever returns). Best-effort by
++ * design: every failure mode degrades to a missing optional stage mark, and
++ * inside a gated process a missed cleanup costs one tiny file until the next
++ * startup sweep. Never throws into the write path - observability must not
++ * be able to fail a transaction.
++ */
++
++import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
++import { join } from "node:path";
++
++import { getWorkflowErrorContext } from "@/lib/workflow/executor/error-context";
++
++// Registry directory. KH_BROADCAST_MARKER_DIR is operator-controlled and is
++// not validated: the write path only creates the directory and files named
++// after allowlisted ids, and the sweep deletes only `.json` entries (below),
++// so nothing in this module treats the directory's other contents as data.
++const MARKER_DIR = process.env.KH_BROADCAST_MARKER_DIR || "/tmp/kh-broadcast-markers";
++
++/** Stage record written by the write path and consumed by the runner. */
++export type BroadcastMarker = {
++  executionId: string;
++  broadcastAt: number;
++};
++
++export function getBroadcastMarkerPath(executionId: string): string {
++  return join(MARKER_DIR, `${executionId}.json`);
++}
++
++/**
++ * Path hardening (issue #2289 review): the execution id drives both a file
++ * path and the rmSync in takeBroadcastMarker, so it is validated before it
++ * reaches the filesystem. Allowlist rather than blocklist: the platform's
++ * ids are nanoid over [0-9a-z] (lib/utils/id.ts generateId) or UUIDs, so
++ * [A-Za-z0-9_-] with a 128-char cap accepts every id the platform issues
++ * while rejecting path separators, `..` and control characters outright.
++ * Hardening rather than a live hole - ids are DB-generated and SQS messages
++ * are HMAC-signed - but the value became load-bearing for a delete, so it
++ * is checked like one.
++ */
++const SAFE_EXECUTION_ID = /^[A-Za-z0-9_-]{1,128}$/;
++
++function isSafeExecutionId(executionId: string): boolean {
++  return SAFE_EXECUTION_ID.test(executionId);
++}
++
++/**
++ * Write gate (issue #2289 review, third pass): the registry is only consumed
++ * by the executor and the runner, so only they may populate it. Every other
++ * process importing the lib/web3 write paths - the Next app pod above all,
++ * which is the longest-lived pod in the fleet - would otherwise write one
++ * marker per execution with no take, no catch and no sweep to remove it. A
++ * startup sweep wired into the app would only bound it per restart, not per
++ * run; the gate bounds it per run, structurally. Side-effect import pattern:
++ * the same mechanism workflow-error-context-bootstrap uses.
++ */
++let markerWritesEnabled = false;
++
++export function enableBroadcastMarkers(): void {
++  markerWritesEnabled = true;
++}
++
++/**
++ * Best-effort execution id for the broadcast marker: reads the async-local
++ * workflow error context the engine enters at run start, which carries
++ * execution_id across every async leg of the run (including plugin steps).
++ * Callers that know their execution id (the runner, the in-process path,
++ * tests) pass it explicitly; outside a registered context (scripts, tests)
++ * this returns undefined and markBroadcast only bumps the counters. This
++ * function itself uses no Node builtins, so importing it from lib/web3 write
++ * paths adds nothing the engine has not already loaded -- note that the
++ * module as a whole is not pure: it imports `node:fs` and `node:path` above
++ * to maintain the registry. Only this accessor is dependency-free.
++ */
++export function currentExecutionId(): string | undefined {
++  return getWorkflowErrorContext()?.execution_id;
++}
++
++/**
++ * Record the moment a transaction was handed to the chain. Called at the
++ * broadcast points inside lib/web3 write paths; the owning execution id is
++ * resolved from the async-local workflow context the engine enters at run
++ * start. Errors are swallowed: a failed marker write must never fail the
++ * transaction it observes.
++ */
++export function markBroadcast(
++  executionId: string | undefined = currentExecutionId()
++): void {
++  broadcastCount++;
++  bumpRegisteredCounter();
++  // Ungated process (the Next app pod, scripts, tests without the gate): the
++  // counters are the guarantee, the sidecar is a consumer-local optimization.
++  // Writes stay exclusive to the processes that remove what they write.
++  if (!markerWritesEnabled) {
++    return;
++  }
++  // An unsafe id still counts (the broadcast did happen) but writes no file:
++  // the sidecar is an optimization, the counters are the guarantee.
++  if (!executionId || !isSafeExecutionId(executionId)) {
++    return;
++  }
++  try {
++    mkdirSync(MARKER_DIR, { recursive: true });
++    // First write wins (`wx`), matching ExecutionLatency.mark's first-wins
++    // semantics. Without it a multi-write run keeps its *last* broadcast, and
++    // `observed -> last broadcast` would carry the later step's full
++    // confirmation wait into the headline interval. EEXIST is swallowed by the
++    // catch below, which is the intended outcome: the earlier mark stands.
++    writeFileSync(
++      getBroadcastMarkerPath(executionId),
++      JSON.stringify({
++        executionId,
++        broadcastAt: Date.now(),
++      } satisfies BroadcastMarker),
++      { encoding: "utf-8", flag: "wx" }
++    );
++  } catch {
++    // Sidecar unavailable (read-only fs, sandbox): the registered broadcast
++    // counter still records that a broadcast happened this run.
++  }
++}
++
++/** Process-local count of broadcasts this pod has performed (diagnostic). */
++export function getBroadcastCount(): number {
++  return broadcastCount;
++}
++
++/**
++ * Non-destructive read of the marker for one execution. Concurrent
++ * in-process runs can each peek at their own file without touching another
++ * run's sample. Returns undefined when no broadcast was marked for this
++ * execution (or the file is unreadable/corrupt - treated the same way).
++ */
++export function peekBroadcastMarker(
++  executionId: string
++): BroadcastMarker | undefined {
++  if (!isSafeExecutionId(executionId)) {
++    return undefined;
++  }
++  try {
++    const path = getBroadcastMarkerPath(executionId);
++    if (!existsSync(path)) {
++      return undefined;
++    }
++    const marker = parseMarker(readFileSync(path, "utf-8"));
++    // Reader-level id check: a marker is only valid for the execution whose
++    // name the file carries. parseMarker validates shape without knowing the
++    // requested id; this closes the content-vs-filename gap here so no
++    // consumer can ever receive a mismatched marker.
++    if (marker && marker.executionId !== executionId) {
++      return undefined;
++    }
++    return marker;
++  } catch {
++    return undefined;
++  }
++}
++
++/**
++ * Read-and-discard the marker for one execution: the caller has consumed the
++ * stage record, so its per-execution file is removed. Passing the execution
++ * id explicitly (rather than consuming a shared file) is what makes this safe
++ * under concurrent in-process executions - run B's marker can never be taken
++ * by run A, because A only ever removes its own file.
++ */
++export function takeBroadcastMarker(
++  executionId: string
++): BroadcastMarker | undefined {
++  if (!isSafeExecutionId(executionId)) {
++    return undefined;
++  }
++  try {
++    const path = getBroadcastMarkerPath(executionId);
++    if (!existsSync(path)) {
++      return undefined;
++    }
++    const raw = readFileSync(path, "utf-8");
++    rmSync(path, { force: true });
++    const marker = parseMarker(raw);
++    // Same reader-level id check as peekBroadcastMarker. A mismatched file is
++    // still consumed (removed above): a misfiled marker is garbage either
++    // way, and leaving it behind would defeat the cleanup paths.
++    if (marker && marker.executionId !== executionId) {
++      return undefined;
++    }
++    return marker;
++  } catch {
++    return undefined;
++  }
++}
++
++/**
++ * Delete the marker files this module wrote and return how many were removed.
++ * Called from the executor's listen() at process startup, before the SQS
++ * consumer can start any in-process run: at that point every file present is
++ * a leftover from a previous process that died between broadcast and take
++ * (the one failure mode neither the success take nor the failure catch
++ * covers). Runner pods mount their own emptyDir, so a sweep in the executor
++ * pod cannot touch markers belonging to a live dispatch. The filter is part
++ * of the deletion contract: this module writes only `<safe-id>.json`, so the
++ * sweep removes only `.json` entries, one `rmSync` per entry without
++ * `recursive`, and the count it returns is marker files - not directories,
++ * not anything else that happens to share the directory. Best-effort: a
++ * missing or unreadable directory sweeps nothing and returns 0.
++ */
++export function sweepBroadcastMarkers(): number {
++  try {
++    const entries = readdirSync(MARKER_DIR);
++    let removed = 0;
++    for (const entry of entries) {
++      if (!entry.endsWith(".json")) {
++        continue;
++      }
++      try {
++        rmSync(join(MARKER_DIR, entry), { force: true });
++        removed++;
++      } catch {
++        // Unlinkable entry (permissions, concurrent removal): leave it. The
++        // sweep runs again on the next startup and the file is inert until
++        // then.
++      }
++    }
++    return removed;
++  } catch {
++    // No registry directory yet (fresh pod): nothing to sweep, not an error.
++    return 0;
++  }
++}
++
++function parseMarker(raw: string): BroadcastMarker | undefined {
++  try {
++    const parsed: unknown = JSON.parse(raw);
++    if (
++      typeof parsed === "object" &&
++      parsed !== null &&
++      typeof (parsed as BroadcastMarker).executionId === "string" &&
++      typeof (parsed as BroadcastMarker).broadcastAt === "number"
++    ) {
++      return parsed as BroadcastMarker;
++    }
++    return undefined;
++  } catch {
++    return undefined;
++  }
++}
++
++// The registered counter (keeperhub_executor_broadcasts_total) lives in
++// lib/metrics/collectors/prometheus, which is server-only and drags the whole
++// metrics stack with it; importing it eagerly would weight every lib/web3
++// write path for a metric it rarely reads. Resolve it lazily on first
++// broadcast instead. Resolution is not tied to a startup step: the delta
++// collectors run on an ingest POST (executor) and at shutdown (runner), so
++// the promise may stay unresolved for the process's whole uptime. That is
++// acceptable because nothing depends on it landing early - marks landing
++// before resolution are buffered and flushed on arrival, so the count is
++// exact no matter when the collector appears. Where the collector never
++// becomes available (tests without the server-only shim) this stays a
++// no-op - observability must not be able to fail a transaction.
++let broadcastCount = 0;
++let broadcastCounter: import("prom-client").Counter<string> | undefined;
++let broadcastCounterRequested = false;
++let broadcastCounterBuffer = 0;
++// The in-flight resolution of the lazy counter import, captured so tests can
++// await it deterministically (waitForBroadcastCounterForTests) instead of
++// assuming a dynamic ESM import settles within a fixed number of ticks.
++let broadcastCounterReady: Promise<void> | undefined;
++
++function bumpRegisteredCounter(): void {
++  if (broadcastCounter) {
++    broadcastCounter.inc();
++    return;
++  }
++  broadcastCounterBuffer++;
++  if (!broadcastCounterRequested) {
++    broadcastCounterRequested = true;
++    broadcastCounterReady = import("../../lib/metrics/collectors/prometheus")
++      .then(({ executorBroadcastsTotal }) => {
++        broadcastCounter = executorBroadcastsTotal;
++        if (broadcastCounterBuffer > 0) {
++          broadcastCounter.inc(broadcastCounterBuffer);
++          broadcastCounterBuffer = 0;
++        }
++      })
++      .catch(() => {
++        // Collector unavailable in this process (tests, bundles without the
++        // metrics stack): keep counting locally via getBroadcastCount().
++        broadcastCounterBuffer = 0;
++      });
++  }
++}
++
++/**
++ * Test seam: resolves once a requested counter import has settled (counter
++ * registered, or resolution failed and the buffer was dropped). Resolves
++ * immediately when no import was ever requested. Without this, a test
++ * asserting on the registered counter would have to assume a dynamic ESM
++ * import settles within one macrotask tick - which holds only by accident of
++ * module-load order, not by guarantee.
++ */
++export async function waitForBroadcastCounterForTests(): Promise<void> {
++  if (broadcastCounterReady) {
++    await broadcastCounterReady;
++  }
++}
+diff --git a/keeperhub-executor/lib/correlation-map.test.ts b/keeperhub-executor/lib/correlation-map.test.ts
+new file mode 100644
+index 000000000..c1e430033
+--- /dev/null
++++ b/keeperhub-executor/lib/correlation-map.test.ts
+@@ -0,0 +1,50 @@
++import { beforeEach, describe, expect, it } from "vitest";
++
++const { trackLatency, peekLatency, takeLatency, clearLatencyMap } = await import(
++  "./correlation-map"
++);
++const { ExecutionLatency } = await import("../latency");
++
++beforeEach(() => {
++  clearLatencyMap();
++});
++
++describe("correlation map", () => {
++  it("tracks and peeks without removing", () => {
++    const latency = new ExecutionLatency("corr-a");
++    trackLatency(latency);
++    expect(peekLatency("corr-a")).toBe(latency);
++    expect(peekLatency("corr-a")).toBe(latency); // still there
++  });
++
++  it("take removes the entry", () => {
++    const latency = new ExecutionLatency("corr-b");
++    trackLatency(latency);
++    expect(takeLatency("corr-b")).toBe(latency);
++    expect(peekLatency("corr-b")).toBeUndefined();
++    expect(takeLatency("corr-b")).toBeUndefined();
++  });
++
++  it("returns undefined for unknown ids", () => {
++    expect(peekLatency("nope")).toBeUndefined();
++    expect(takeLatency("nope")).toBeUndefined();
++  });
++
++  it("evicts the oldest entry at the cap instead of growing unbounded", async () => {
++    // Re-import with a tiny cap via module state: the cap is a module
++    // constant, so exercise the real one cheaply by tracking cap+1 entries.
++    const capModule = await import("./correlation-map");
++    const { MAX_TRACKED } = (capModule as unknown as {
++      MAX_TRACKED?: number;
++    }) as { MAX_TRACKED?: number };
++    const limit = MAX_TRACKED ?? 1024;
++    const first = new ExecutionLatency("corr-first");
++    trackLatency(first);
++    for (let i = 0; i < limit; i++) {
++      trackLatency(new ExecutionLatency(`corr-${i}`));
++    }
++    // The oldest was evicted; the newest survive.
++    expect(peekLatency("corr-first")).toBeUndefined();
++    expect(peekLatency(`corr-${limit - 1}`)).toBeDefined();
++  });
++});
+diff --git a/keeperhub-executor/lib/correlation-map.ts b/keeperhub-executor/lib/correlation-map.ts
+new file mode 100644
+index 000000000..436ecdc7c
+--- /dev/null
++++ b/keeperhub-executor/lib/correlation-map.ts
+@@ -0,0 +1,104 @@
++/**
++ * Correlation-id lookup for latency observations (issue #2289).
++ *
++ * The executor creates an ExecutionLatency per SQS message, but the runner
++ * pod's observations arrive asynchronously over the metrics ingest, after the
++ * message handler has moved on. This bounded map lets the ingest applier find
++ * the originating timeline by correlation id. Entries are removed when their
++ * received-completed observation is applied; two bounds keep a pathological
++ * ingest stream from growing the map without bound - an age bound against the
++ * run's own `received` stamp, and a count cap as the backstop.
++ *
++ * The age bound is the one that matters. Plenty of tracked runs never produce
++ * an observation to free them: in-process runs and api-target runs ship
++ * nothing, a message can be dropped before dispatch, and a runner pod can die
++ * before its ingest lands. Under a count-only cap those entries turn the 1024
++ * slots over on message *volume*, so a run slower than that window has its
++ * entry evicted before its own observation arrives - it is counted `skipped`
++ * and the histogram loses exactly the slow runs it exists to surface. Bounding
++ * by age makes eviction depend on how long the entry has waited rather than on
++ * how busy the executor is.
++ */
++
++import type { ExecutionLatency } from "../latency";
++
++const MAX_TRACKED = 1024;
++
++/**
++ * How long a tracked entry may wait for observations before it is dropped.
++ *
++ * An hour is deliberately far outside the range of any legitimate wait, in both
++ * directions:
++ *
++ *  - Entries that *do* ship belong to k8s-job runs, and that Job is bounded by
++ *    `activeDeadlineSeconds` (CONFIG.jobActiveDeadline, 300s by default) with the
++ *    ingest landing moments after the run ends. An hour is therefore twelve times
++ *    the longest wait the platform can produce - not a tuned threshold, but a
++ *    bound nothing legitimate can approach.
++ *  - Entries that never ship - in-process and api runs, and messages dropped
++ *    before dispatch - are the reason this bound exists at all. Reclaiming those
++ *    at an hour rather than immediately is the conservative end, and the asymmetry
++ *    decides it: being slow costs a held slot, being eager costs a real sample.
++ *
++ * One assumption, written down because it is invisible from here: if
++ * `JOB_ACTIVE_DEADLINE` is raised far above its default, this bound has to rise
++ * with it.
++ */
++const MAX_TRACKED_AGE_MS = 60 * 60 * 1000;
++
++const map = new Map<string, TrackedEntry>();
++
++type TrackedEntry = {
++  latency: ExecutionLatency;
++  /** The run's own receive stamp, or the tracking time when it has none. */
++  trackedAt: number;
++};
++
++/**
++ * Drop entries that have waited longer than MAX_TRACKED_AGE_MS. The map is
++ * capped at 1024 entries, so this is a bounded scan of a tiny set on the track
++ * path, and it runs before the cap check so age - not arrival order - decides
++ * what to give up.
++ */
++function evictStale(now: number): void {
++  for (const [id, entry] of map) {
++    if (now - entry.trackedAt > MAX_TRACKED_AGE_MS) {
++      map.delete(id);
++    }
++  }
++}
++
++/** Track the timeline for a run from SQS receive until its observations land. */
++export function trackLatency(latency: ExecutionLatency): void {
++  const now = Date.now();
++  evictStale(now);
++  if (map.size >= MAX_TRACKED) {
++    const oldest = map.keys().next().value;
++    if (oldest !== undefined) {
++      map.delete(oldest);
++    }
++  }
++  map.set(latency.correlationId, {
++    latency,
++    trackedAt: latency.at("received") ?? now,
++  });
++}
++
++/** Peek without removing (observed-broadcast arrives before completed). */
++export function peekLatency(correlationId: string): ExecutionLatency | undefined {
++  return map.get(correlationId)?.latency;
++}
++
++/** Take and remove (the run is fully observed; the entry has served its purpose). */
++export function takeLatency(correlationId: string): ExecutionLatency | undefined {
++  const entry = map.get(correlationId);
++  if (entry !== undefined) {
++    map.delete(correlationId);
++  }
++  return entry?.latency;
++}
++
++/** Test hook: drop everything. */
++export function clearLatencyMap(): void {
++  map.clear();
++}
+diff --git a/keeperhub-executor/lib/latency-observations.test.ts b/keeperhub-executor/lib/latency-observations.test.ts
+new file mode 100644
+index 000000000..dada3a36d
+--- /dev/null
++++ b/keeperhub-executor/lib/latency-observations.test.ts
+@@ -0,0 +1,166 @@
++import { afterEach, describe, expect, it } from "vitest";
++import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++
++// Fresh module registry per test so the module-level marker dir resolution
++// and env reads behave; the sidecar registry points at a scratch dir.
++const tmp = mkdtempSync(join(tmpdir(), "kh-obs-test-"));
++process.env.KH_BROADCAST_MARKER_DIR = tmp;
++
++const markerFile = (executionId: string) => join(tmp, `${executionId}.json`);
++
++afterEach(() => {
++  delete process.env.KH_CORRELATION_ID;
++  delete process.env.KH_RECEIVED_AT;
++  delete process.env.KH_OBSERVED_AT;
++  rmSync(join(tmp, "exec-1.json"), { force: true });
++  rmSync(join(tmp, "exec-OTHER.json"), { force: true });
++});
++
++const BASE = {
++  executionId: "exec-1",
++  workflowId: "wf-1",
++  triggerType: "event",
++};
++
++async function fresh() {
++  return await import("./latency-observations");
++}
++
++describe("collectLatencyObservations", () => {
++  it("returns nothing without a correlation id (legacy run)", async () => {
++    const { collectLatencyObservations } = await fresh();
++    const obs = collectLatencyObservations({
++      ...BASE,
++      receivedAt: 1000,
++      observedAt: 900,
++      completedAt: 2000,
++    });
++    expect(obs).toEqual([]);
++  });
++
++  it("collects observed-broadcast from the sidecar marker plus KH_OBSERVED_AT", async () => {
++    process.env.KH_CORRELATION_ID = "corr-1";
++    process.env.KH_OBSERVED_AT = "1000";
++    writeFileSync(
++      markerFile("exec-1"),
++      JSON.stringify({ executionId: "exec-1", broadcastAt: 4500 }),
++      "utf-8"
++    );
++    const { collectLatencyObservations } = await fresh();
++    const obs = collectLatencyObservations({
++      ...BASE,
++      receivedAt: 1200,
++      observedAt: 1000,
++      completedAt: 9000,
++    });
++    // Both intervals are anchored here: observed-broadcast from the marker,
++    // received-completed from KH_RECEIVED_AT.
++    expect(obs).toHaveLength(2);
++    expect(obs[0]).toEqual({
++      correlationId: "corr-1",
++      executionId: "exec-1",
++      workflowId: "wf-1",
++      triggerType: "event",
++      dispatchTarget: "k8s-job",
++      stage: "observed-broadcast",
++      durationMs: 3500,
++    });
++    expect(obs[1]).toMatchObject({ stage: "received-completed", durationMs: 7800 });
++  });
++
++  it("collects received-completed from KH_RECEIVED_AT", async () => {
++    process.env.KH_CORRELATION_ID = "corr-2";
++    process.env.KH_RECEIVED_AT = "1500";
++    const { collectLatencyObservations } = await fresh();
++    const obs = collectLatencyObservations({
++      ...BASE,
++      receivedAt: 1500,
++      observedAt: undefined, // legacy message: no tracker observation
++      completedAt: 5200,
++    });
++    expect(obs).toEqual([
++      expect.objectContaining({
++        correlationId: "corr-2",
++        stage: "received-completed",
++        durationMs: 3700,
++      }),
++    ]);
++  });
++
++  it("emits no negative observed-broadcast when observedAt postdates the marker", async () => {
++    process.env.KH_CORRELATION_ID = "corr-3";
++    process.env.KH_OBSERVED_AT = "99999";
++    writeFileSync(
++      markerFile("exec-1"),
++      JSON.stringify({ executionId: "exec-1", broadcastAt: 4500 }),
++      "utf-8"
++    );
++    const { collectLatencyObservations } = await fresh();
++    const obs = collectLatencyObservations({
++      ...BASE,
++      receivedAt: 1000,
++      observedAt: 99999,
++      completedAt: 100000,
++    });
++    // Clock-skew guard: a negative interval is never shipped.
++    expect(obs.find((o) => o.stage === "observed-broadcast")).toBeUndefined();
++  });
++
++  it("tolerates a missing/cleared marker: other observations still ship", async () => {
++    process.env.KH_CORRELATION_ID = "corr-4";
++    process.env.KH_RECEIVED_AT = "100";
++    const { collectLatencyObservations } = await fresh();
++    const obs = collectLatencyObservations({
++      ...BASE,
++      receivedAt: 100,
++      observedAt: 50,
++      completedAt: 700,
++    });
++    expect(obs).toHaveLength(1);
++    expect(obs[0].stage).toBe("received-completed");
++  });
++
++  it("ignores a marker owned by a different execution (per-execution registry)", async () => {
++    process.env.KH_CORRELATION_ID = "corr-5";
++    process.env.KH_OBSERVED_AT = "1000";
++    writeFileSync(
++      markerFile("exec-OTHER"),
++      JSON.stringify({ executionId: "exec-OTHER", broadcastAt: 4500 }),
++      "utf-8"
++    );
++    const { collectLatencyObservations } = await fresh();
++    const obs = collectLatencyObservations({
++      ...BASE,
++      receivedAt: 1000,
++      observedAt: 1000,
++      completedAt: 8000,
++    });
++    expect(obs.find((o) => o.stage === "observed-broadcast")).toBeUndefined();
++  });
++
++  it("consumes the marker on take: a second collect does not double-ship", async () => {
++    process.env.KH_CORRELATION_ID = "corr-6";
++    process.env.KH_OBSERVED_AT = "1000";
++    writeFileSync(
++      markerFile("exec-1"),
++      JSON.stringify({ executionId: "exec-1", broadcastAt: 4500 }),
++      "utf-8"
++    );
++    const { collectLatencyObservations } = await fresh();
++    const params = {
++      ...BASE,
++      receivedAt: 1200,
++      observedAt: 1000,
++      completedAt: 9000,
++    };
++    const first = collectLatencyObservations(params);
++    expect(first.find((o) => o.stage === "observed-broadcast")).toBeDefined();
++    // The take is read-and-discard for this execution: a repeat caller (a
++    // retry after a failed shipment) sees a consumed marker, never a
++    // duplicated observation.
++    const second = collectLatencyObservations(params);
++    expect(second.find((o) => o.stage === "observed-broadcast")).toBeUndefined();
++  });
++});
+diff --git a/keeperhub-executor/lib/latency-observations.ts b/keeperhub-executor/lib/latency-observations.ts
+new file mode 100644
+index 000000000..f21fd74f0
+--- /dev/null
++++ b/keeperhub-executor/lib/latency-observations.ts
+@@ -0,0 +1,119 @@
++/**
++ * Latency observations from a workflow-runner pod (issue #2289).
++ *
++ * Ephemeral Job pods cannot write into the executor's Prometheus histograms
++ * (histogram observations cannot be merged across pods without losing bucket
++ * fidelity - see metrics-shipping.ts). What a pod CAN ship is point
++ * observations: one duration per stage interval, labeled per-run. The
++ * executor maps them back onto its central histograms via the ingest
++ * endpoint, so k8s-job dispatches fill the same distributions in-process runs
++ * do.
++ *
++ * Two intervals per run:
++ *  - observed-broadcast    the headline #2289 measurement, from the tracker's
++ *                          observedAt (carried in KH_OBSERVED_AT) to the
++ *                          broadcast timestamp the write path dropped in the
++ *                          sidecar marker. Absent for legacy messages without
++ *                          observedAt, and for runs that never broadcast.
++ *  - received-completed    the run's lifetime, from KH_RECEIVED_AT (stamped by
++ *                          the executor before dispatch) to this pod's own
++ *                          terminal timestamp. The executor records it into
++ *                          executor.execution.latency_ms with
++ *                          stage="completed". Taking the start point from the
++ *                          executor rather than from the pod is what makes this
++ *                          the metric METRICS_REFERENCE.md documents - receive
++ *                          to terminal, the same interval the in-process series
++ *                          measures - rather than the pod's own lifetime. It
++ *                          does not make the measurement skew-free: the two
++ *                          endpoints are read on two different clocks, so a pod
++ *                          clock offset is carried into this interval in full.
++ *
++ * Best-effort: absent env markers or an unreadable sidecar simply yield no
++ * observation for that interval.
++ */
++
++import { takeBroadcastMarker } from "./broadcast-marker";
++
++export type LatencyObservationStage =
++  | "observed-broadcast"
++  | "received-completed";
++
++export type PendingObservation = {
++  correlationId: string;
++  executionId: string;
++  workflowId: string;
++  triggerType: string;
++  dispatchTarget: string;
++  stage: LatencyObservationStage;
++  durationMs: number;
++};
++
++/** The correlation id the executor injected on the Job (k8s-job.ts). */
++function runnerCorrelationId(): string {
++  return process.env.KH_CORRELATION_ID ?? "";
++}
++
++/**
++ * Collect the run's latency observations after executeWorkflow returns.
++ * Returns an empty list when nothing was measurable (no correlation id, no
++ * broadcast, or an unreadable sidecar) - shipping nothing is always valid.
++ */
++export function collectLatencyObservations(params: {
++  executionId: string;
++  workflowId: string;
++  /** Undefined when the run was not trigger-originated (e.g. manual API executes). */
++  triggerType: string | undefined;
++  /** Epoch ms the executor received the SQS message (KH_RECEIVED_AT). */
++  receivedAt: number | undefined;
++  /** Epoch ms the tracker first observed the event (KH_OBSERVED_AT). */
++  observedAt: number | undefined;
++  /** Epoch ms the engine reached its terminal state. */
++  completedAt: number;
++}): PendingObservation[] {
++  const { executionId, workflowId, receivedAt, observedAt, completedAt } = params;
++  // The wire contract (LatencyObservation) carries a plain string; "manual" is
++  // the platform's own label for runs with no trigger origin.
++  const triggerType = params.triggerType ?? "manual";
++  const correlationId = runnerCorrelationId();
++  if (!correlationId) {
++    return [];
++  }
++
++  const observations: PendingObservation[] = [];
++
++  const marker = takeBroadcastMarker(executionId);
++  // Redundant with the reader-level check in takeBroadcastMarker, which now
++  // guarantees any returned marker carries this execution's id; kept
++  // symmetric with in-process.ts so both consumers read the same way.
++  if (marker && marker.executionId === executionId && observedAt !== undefined) {
++    const durationMs = marker.broadcastAt - observedAt;
++    if (Number.isFinite(durationMs) && durationMs >= 0) {
++      observations.push({
++        correlationId,
++        executionId,
++        workflowId,
++        triggerType,
++        dispatchTarget: "k8s-job",
++        stage: "observed-broadcast",
++        durationMs,
++      });
++    }
++  }
++
++  if (receivedAt !== undefined) {
++    const durationMs = completedAt - receivedAt;
++    if (Number.isFinite(durationMs) && durationMs >= 0) {
++      observations.push({
++        correlationId,
++        executionId,
++        workflowId,
++        triggerType,
++        dispatchTarget: "k8s-job",
++        stage: "received-completed",
++        durationMs,
++      });
++    }
++  }
++
++  return observations;
++}
+diff --git a/keeperhub-executor/lib/metrics-shipping.test.ts b/keeperhub-executor/lib/metrics-shipping.test.ts
+index cb542c2a5..c699e04ec 100644
+--- a/keeperhub-executor/lib/metrics-shipping.test.ts
++++ b/keeperhub-executor/lib/metrics-shipping.test.ts
+@@ -40,9 +40,12 @@ const workflowCounters = {
+   executionsFinished: makeCounter(),
+ };
+ 
++const executorBroadcastsTotal = makeCounter();
++
+ vi.mock("../../lib/metrics/collectors/prometheus", () => ({
+   rpcMetrics: counters,
+   workflowCounterMetrics: workflowCounters,
++  executorBroadcastsTotal,
+ }));
+ 
+ const {
+@@ -50,8 +53,10 @@ const {
+   applyCounterDeltas,
+   isIngestPayload,
+   isMetricDelta,
++  isLatencyObservation,
+   SHIPPABLE_COUNTER_NAMES,
+ } = await import("./metrics-shipping");
++const { TRIGGER_TYPES } = await import("../../lib/metrics/types");
+ 
+ describe("collectCounterDeltas", () => {
+   beforeEach(() => {
+@@ -238,6 +243,71 @@ describe("payload validators", () => {
+   });
+ });
+ 
++describe("isLatencyObservation label allowlists", () => {
++  // These two labels are written straight into `trigger_type` and
++  // `dispatch_target`, and this validator is the last check before that happens.
++  // A validator narrower than the emitter does not corrupt a number - it rejects
++  // the observation and the sample is lost - so the sets have to agree with their
++  // owners exactly, in both directions.
++  const observation = (
++    overrides: Record<string, unknown> = {}
++  ): Record<string, unknown> => ({
++    correlationId: "1a2b3c4d5e6f7890",
++    executionId: "exec-1",
++    workflowId: "wf-1",
++    triggerType: "event",
++    dispatchTarget: "k8s-job",
++    stage: "observed-broadcast",
++    durationMs: 120,
++    ...overrides,
++  });
++
++  it("accepts every trigger type the platform can emit", () => {
++    // The regression this guards: the allowlist was hand-written and omitted
++    // `scheduled`, the legacy label TRIGGER_TYPES keeps so historical series stay
++    // valid. Iterating the owner's set means a future addition cannot silently
++    // start dropping observations.
++    for (const triggerType of TRIGGER_TYPES) {
++      expect(isLatencyObservation(observation({ triggerType }))).toBe(true);
++    }
++  });
++
++  it("accepts the legacy `scheduled` label specifically", () => {
++    expect(isLatencyObservation(observation({ triggerType: "scheduled" }))).toBe(
++      true
++    );
++  });
++
++  it("accepts every dispatch target in the union", () => {
++    for (const dispatchTarget of ["k8s-job", "in-process", "api"]) {
++      expect(isLatencyObservation(observation({ dispatchTarget }))).toBe(true);
++    }
++  });
++
++  it("rejects an unknown trigger type", () => {
++    expect(isLatencyObservation(observation({ triggerType: "whatever" }))).toBe(
++      false
++    );
++  });
++
++  it("rejects an unknown dispatch target", () => {
++    expect(isLatencyObservation(observation({ dispatchTarget: "k8s_job" }))).toBe(
++      false
++    );
++  });
++
++  it("does not accept an inherited object member as a dispatch target", () => {
++    // The key arrives over the network, so `toString` must not read as valid the
++    // way it would with `value in map`.
++    expect(
++      isLatencyObservation(observation({ dispatchTarget: "toString" }))
++    ).toBe(false);
++    expect(
++      isLatencyObservation(observation({ dispatchTarget: "constructor" }))
++    ).toBe(false);
++  });
++});
++
+ describe("SHIPPABLE_COUNTER_NAMES", () => {
+   it("matches the set of shippable RPC counters", () => {
+     expect(SHIPPABLE_COUNTER_NAMES).toContain(
+diff --git a/keeperhub-executor/lib/metrics-shipping.ts b/keeperhub-executor/lib/metrics-shipping.ts
+index 9ea4546c3..16f1c371e 100644
+--- a/keeperhub-executor/lib/metrics-shipping.ts
++++ b/keeperhub-executor/lib/metrics-shipping.ts
+@@ -9,28 +9,56 @@
+  * Only counters are shipped. Gauges carry state (not accumulations) and
+  * histograms cannot be merged without losing bucket fidelity. RPC latency
+  * histograms from Job pods are intentionally dropped; executor-native
+- * workflows still record them directly.
++ * workflows still record them directly. The executor broadcast counter is
++ * included: it is bumped by the pod that performed the broadcast and merged
++ * additively on the executor side, giving the #2289 broadcast stage a
++ * fleet-visible total even where the per-run timestamp is not shipped.
+  */
+ 
+ import type { Counter } from "prom-client";
+ 
++import { isTriggerType } from "../../lib/metrics/types";
++import type { DispatchTarget } from "../types";
++
+ export type MetricDelta = {
+   name: string;
+   labels: Record<string, string>;
+   value: number;
+ };
+ 
++/**
++ * A single latency observation from a runner pod: a duration between two
++ * recorded stages of one execution, labeled per-run. The executor maps the
++ * correlation id back to its ExecutionLatency timeline (rebuilding the
++ * observed timestamp for legacy/absent messages) and records the sample into
++ * the central histograms the pod cannot reach. Histograms cannot be merged
++ * across pods without losing bucket fidelity - point observations can.
++ */
++export type LatencyObservation = {
++  correlationId: string;
++  executionId: string;
++  workflowId: string;
++  triggerType: string;
++  dispatchTarget: string;
++  /** Stage interval the observation covers: observed->broadcast or received->completed. */
++  stage: "observed-broadcast" | "received-completed";
++  durationMs: number;
++};
++
+ export type IngestPayload = {
+   deltas: MetricDelta[];
++  /** Optional: per-run latency observations from the pod (issue #2289). */
++  observations?: LatencyObservation[];
+ };
+ 
+ async function loadShippableCounters(): Promise<
+   Record<string, Counter<string>>
+ > {
+-  const { rpcMetrics, workflowCounterMetrics } = await import(
++  const { rpcMetrics, workflowCounterMetrics, executorBroadcastsTotal } = await import(
+     "../../lib/metrics/collectors/prometheus"
+   );
+   return {
++    keeperhub_executor_broadcasts_total: executorBroadcastsTotal,
+     keeperhub_rpc_primary_attempts_total: rpcMetrics.primaryAttempts,
+     keeperhub_rpc_primary_failures_total: rpcMetrics.primaryFailures,
+     keeperhub_rpc_fallback_attempts_total: rpcMetrics.fallbackAttempts,
+@@ -47,6 +75,7 @@ async function loadShippableCounters(): Promise<
+ }
+ 
+ export const SHIPPABLE_COUNTER_NAMES = [
++  "keeperhub_executor_broadcasts_total",
+   "keeperhub_rpc_primary_attempts_total",
+   "keeperhub_rpc_primary_failures_total",
+   "keeperhub_rpc_fallback_attempts_total",
+@@ -83,6 +112,39 @@ export async function collectCounterDeltas(): Promise<MetricDelta[]> {
+   return deltas;
+ }
+ 
++/**
++ * Applier for pod latency observations, injected by index.ts to avoid a
++ * dependency cycle (the collector needs the registry; the runner bundle must
++ * not import it).
++ */
++export type LatencyObservationApplier = (
++  observations: readonly LatencyObservation[]
++) => { applied: number; skipped: number };
++
++let applyLatencyObservationsImpl: LatencyObservationApplier | undefined;
++
++/** Register the executor-side applier. No-op when called twice. */
++export function setLatencyObservationApplier(
++  impl: LatencyObservationApplier
++): void {
++  applyLatencyObservationsImpl = impl;
++}
++
++/**
++ * Fold pod observations into the executor's latency timelines and central
++ * histograms. Runs on every ingest that carries observations. When no
++ * applier is registered (runner bundle, tests without one) observations are
++ * still validated by isIngestPayload but simply skipped.
++ */
++export function applyLatencyObservations(
++  observations: readonly LatencyObservation[]
++): { applied: number; skipped: number } {
++  if (!applyLatencyObservationsImpl) {
++    return { applied: 0, skipped: observations.length };
++  }
++  return applyLatencyObservationsImpl(observations);
++}
++
+ export async function applyCounterDeltas(
+   deltas: readonly MetricDelta[]
+ ): Promise<{ applied: number; skipped: number }> {
+@@ -150,9 +212,78 @@ export function isIngestPayload(value: unknown): value is IngestPayload {
+   if (typeof value !== "object" || value === null) {
+     return false;
+   }
+-  const { deltas } = value as { deltas?: unknown };
++  const { deltas, observations } = value as {
++    deltas?: unknown;
++    observations?: unknown;
++  };
+   if (!Array.isArray(deltas)) {
+     return false;
+   }
+-  return deltas.every(isMetricDelta);
++  if (!deltas.every(isMetricDelta)) {
++    return false;
++  }
++  if (observations !== undefined) {
++    if (!Array.isArray(observations) || !observations.every(isLatencyObservation)) {
++      return false;
++    }
++  }
++  return true;
++}
++
++/**
++ * The closed sets the two latency labels may take.
++ *
++ * Allowlisted here because this validator is the last thing before a value
++ * arrives at a metric label: `observation-applier.ts` writes `triggerType` and
++ * `dispatchTarget` straight into `trigger_type` and `dispatch_target`. An
++ * unexpected value would not corrupt a number - it would mint a new time series
++ * for every distinct string a pod sends, which is the metrics-cost failure
++ * #2289 rules out by name.
++ *
++ * Both sets are taken from their owners rather than restated here, because a
++ * copy inside a validator fails in the direction that loses data:
++ *
++ *  - Trigger types come from `isTriggerType`/`TRIGGER_TYPES` (lib/metrics/types),
++ *    which includes `scheduled` - the legacy label kept so historical series stay
++ *    valid. A hand-written list that omitted it would not corrupt a metric, it
++ *    would silently discard observations the platform still emits.
++ *  - Dispatch targets are a total map, `Record<DispatchTarget, true>`, so adding
++ *    a target to the union without allowing it here is a compile error. A
++ *    `readonly DispatchTarget[]` would compile and then drop that target's samples
++ *    at runtime, which is the failure this whole change exists to prevent.
++ *
++ * `isTriggerType` is imported rather than re-implemented: lib/metrics/types has no
++ * imports of its own, and observation-applier already imports LabelKeys from it, so
++ * this adds nothing to a pod's load.
++ */
++const DISPATCH_TARGETS: Record<DispatchTarget, true> = {
++  "k8s-job": true,
++  "in-process": true,
++  api: true,
++};
++
++function isDispatchTarget(value: string): value is DispatchTarget {
++  // hasOwn, not `value in`: the key arrives over the network, so inherited
++  // members like `toString` must not read as a valid target.
++  return Object.hasOwn(DISPATCH_TARGETS, value);
++}
++
++export function isLatencyObservation(value: unknown): value is LatencyObservation {
++  if (typeof value !== "object" || value === null) {
++    return false;
++  }
++  const o = value as Record<string, unknown>;
++  return (
++    typeof o.correlationId === "string" &&
++    typeof o.executionId === "string" &&
++    typeof o.workflowId === "string" &&
++    typeof o.triggerType === "string" &&
++    isTriggerType(o.triggerType) &&
++    typeof o.dispatchTarget === "string" &&
++    isDispatchTarget(o.dispatchTarget) &&
++    (o.stage === "observed-broadcast" || o.stage === "received-completed") &&
++    typeof o.durationMs === "number" &&
++    Number.isFinite(o.durationMs) &&
++    o.durationMs >= 0
++  );
+ }
+diff --git a/keeperhub-executor/lib/observation-applier.test.ts b/keeperhub-executor/lib/observation-applier.test.ts
+new file mode 100644
+index 000000000..97542ae33
+--- /dev/null
++++ b/keeperhub-executor/lib/observation-applier.test.ts
+@@ -0,0 +1,102 @@
++import { beforeEach, describe, expect, it, vi } from "vitest";
++
++// The applier reads the collector through lib/metrics; stub the collector so
++// samples can be asserted without a registry.
++const recordLatencyMock = vi.fn();
++vi.mock("../../lib/metrics", () => ({
++  getMetricsCollector: () => ({ recordLatency: recordLatencyMock }),
++}));
++
++// Server-only guard stub (metrics/types imports are type-only, but the
++// registry module chain may carry the marker).
++vi.mock("server-only", () => ({}));
++
++const { applyObservations } = await import("./observation-applier");
++const { trackLatency, peekLatency, clearLatencyMap } = await import(
++  "./correlation-map"
++);
++const { ExecutionLatency } = await import("../latency");
++const { MetricNames, LabelKeys } = await import("../../lib/metrics/types");
++
++beforeEach(() => {
++  recordLatencyMock.mockClear();
++  clearLatencyMap();
++});
++
++const BASE = {
++  correlationId: "corr-1",
++  executionId: "exec-1",
++  workflowId: "wf-1",
++  triggerType: "event",
++  dispatchTarget: "k8s-job",
++};
++
++describe("applyObservations", () => {
++  it("records observed-broadcast even when the correlation entry is gone", () => {
++    const { applied, skipped } = applyObservations([
++      { ...BASE, stage: "observed-broadcast", durationMs: 4200 },
++    ]);
++    expect(applied).toBe(1);
++    expect(skipped).toBe(0);
++    expect(recordLatencyMock).toHaveBeenCalledWith(
++      MetricNames.EXECUTOR_BROADCAST_LATENCY,
++      4200,
++      {
++        [LabelKeys.TRIGGER_TYPE]: "event",
++        [LabelKeys.DISPATCH_TARGET]: "k8s-job",
++      }
++    );
++  });
++
++  it("marks the tracked timeline broadcast and records the sample", () => {
++    const latency = new ExecutionLatency("corr-2");
++    latency.mark("observed", 1000);
++    trackLatency(latency);
++    applyObservations([
++      { ...BASE, correlationId: "corr-2", stage: "observed-broadcast", durationMs: 2500 },
++    ]);
++    expect(latency.has("broadcast")).toBe(true);
++    expect(latency.broadcastMs()).toBe(2500);
++  });
++
++  it("anchors received-completed on the executor's received stamp", () => {
++    const latency = new ExecutionLatency("corr-3");
++    latency.mark("received", 10_000);
++    trackLatency(latency);
++    const { applied } = applyObservations([
++      { ...BASE, correlationId: "corr-3", stage: "received-completed", durationMs: 6400 },
++    ]);
++    expect(applied).toBe(1);
++    // completion = received + pod-reported duration; totalMs derived there.
++    expect(latency.totalMs()).toBe(6400);
++    expect(recordLatencyMock).toHaveBeenCalledWith(
++      MetricNames.EXECUTOR_EXECUTION_LATENCY,
++      6400,
++      expect.objectContaining({ stage: "completed" })
++    );
++    // The timeline is fully observed: the correlation entry was freed.
++    expect(peekLatency("corr-3")).toBeUndefined();
++  });
++
++  it("skips received-completed with no tracked timeline (executor restarted)", () => {
++    const { applied, skipped } = applyObservations([
++      { ...BASE, correlationId: "ghost", stage: "received-completed", durationMs: 100 },
++    ]);
++    expect(applied).toBe(0);
++    expect(skipped).toBe(1);
++    expect(recordLatencyMock).not.toHaveBeenCalled();
++  });
++
++  it("counts mixed batches correctly", () => {
++    const latency = new ExecutionLatency("corr-4");
++    latency.mark("received", 5_000);
++    trackLatency(latency);
++    const { applied, skipped } = applyObservations([
++      { ...BASE, correlationId: "corr-unknown", stage: "observed-broadcast", durationMs: 800 },
++      { ...BASE, correlationId: "corr-4", stage: "received-completed", durationMs: 1200 },
++      { ...BASE, correlationId: "corr-ghost2", stage: "received-completed", durationMs: 300 },
++    ]);
++    expect(applied).toBe(2);
++    expect(skipped).toBe(1);
++  });
++});
+diff --git a/keeperhub-executor/lib/observation-applier.ts b/keeperhub-executor/lib/observation-applier.ts
+new file mode 100644
+index 000000000..4fbfc6567
+--- /dev/null
++++ b/keeperhub-executor/lib/observation-applier.ts
+@@ -0,0 +1,101 @@
++/**
++ * Executor-side applier for runner latency observations (issue #2289).
++ *
++ * Maps each observation back onto its ExecutionLatency via the correlation
++ * map, marks the timeline (so per-run log lines carry the pod stages), and
++ * records the point sample into the central histograms:
++ *
++ *  - observed-broadcast   -> executor.broadcast.latency_ms
++ *                            (trigger observed -> transaction broadcast; the
++ *                            interval #2289 asks the distribution of)
++ *  - received-completed   -> the timeline's received stamp is authoritative
++ *                            for the start point; the observation supplies
++ *                            the completion offset, recorded into
++ *                            executor.execution.latency_ms with
++ *                            stage="completed"
++ *
++ * Registered with metrics-shipping via setLatencyObservationApplier, which
++ * keeps this module (and its registry import) out of the runner bundle.
++ * Observations whose correlation id is unknown (restarted executor, cap
++ * eviction) are recorded into the histograms anyway when the stage interval
++ * is self-contained, and skipped otherwise - a lost correlation must never
++ * lose a measurable sample where it can still be placed.
++ */
++
++import { getMetricsCollector } from "../../lib/metrics";
++import { LabelKeys, MetricNames } from "../../lib/metrics/types";
++import { peekLatency, takeLatency } from "./correlation-map";
++import {
++  setLatencyObservationApplier,
++  type LatencyObservation,
++} from "./metrics-shipping";
++
++function recordSample(
++  name: string,
++  durationMs: number,
++  labels: Record<string, string>
++): void {
++  getMetricsCollector().recordLatency(name, durationMs, labels);
++}
++
++export function applyObservations(
++  observations: readonly LatencyObservation[]
++): { applied: number; skipped: number } {
++  let applied = 0;
++  let skipped = 0;
++
++  for (const o of observations) {
++    const latency = peekLatency(o.correlationId);
++    const labels = {
++      [LabelKeys.TRIGGER_TYPE]: o.triggerType,
++      [LabelKeys.DISPATCH_TARGET]: o.dispatchTarget,
++    };
++
++    if (o.stage === "observed-broadcast") {
++      // Self-contained interval: the pod measured observedAt -> broadcast.
++      // Even without the correlation entry the sample is placeable.
++      recordSample(MetricNames.EXECUTOR_BROADCAST_LATENCY, o.durationMs, labels);
++      // Reconstruct the broadcast epoch on the timeline so the per-run log
++      // line carries the same interval the histogram recorded.
++      const observedAt = latency?.at("observed");
++      latency?.mark(
++        "broadcast",
++        observedAt !== undefined ? observedAt + o.durationMs : Date.now()
++      );
++      applied++;
++    } else {
++      // received-completed: the executor's own received stamp anchors the
++      // start, so only the completion offset is taken from the pod.
++      if (!latency) {
++        skipped++;
++        continue;
++      }
++      const receivedAt = latency.at("received");
++      if (receivedAt === undefined) {
++        skipped++;
++        continue;
++      }
++      latency.mark("completed", receivedAt + o.durationMs);
++      const totalMs = latency.totalMs();
++      if (totalMs === undefined) {
++        skipped++;
++        continue;
++      }
++      recordSample(MetricNames.EXECUTOR_EXECUTION_LATENCY, totalMs, {
++        ...labels,
++        [LabelKeys.STAGE]: "completed",
++      });
++      takeLatency(o.correlationId); // timeline fully observed; free the entry
++      applied++;
++    }
++  }
++
++  return { applied, skipped };
++}
++
++/**
++ * Wire the applier into the ingest path. Called once from index.ts startup.
++ */
++export function registerLatencyObservationApplier(): void {
++  setLatencyObservationApplier(applyObservations);
++}
+diff --git a/keeperhub-executor/lib/ship-metrics.test.ts b/keeperhub-executor/lib/ship-metrics.test.ts
+index 017925252..adf0dfe37 100644
+--- a/keeperhub-executor/lib/ship-metrics.test.ts
++++ b/keeperhub-executor/lib/ship-metrics.test.ts
+@@ -37,7 +37,7 @@ describe("shipMetricsToExecutor", () => {
+     expect(fetchMock).not.toHaveBeenCalled();
+   });
+ 
+-  it("skips posting when there are no deltas", async () => {
++  it("skips posting when there are no deltas and no observations", async () => {
+     process.env.METRICS_COLLECTOR = "prometheus";
+     process.env.EXECUTOR_METRICS_INGEST_URL = "http://executor:3080";
+     collectCounterDeltasMock.mockResolvedValue([]);
+@@ -47,6 +47,31 @@ describe("shipMetricsToExecutor", () => {
+     expect(fetchMock).not.toHaveBeenCalled();
+   });
+ 
++  it("posts when there are no deltas but observations are pending", async () => {
++    process.env.METRICS_COLLECTOR = "prometheus";
++    process.env.EXECUTOR_METRICS_INGEST_URL = "http://executor:3080";
++    collectCounterDeltasMock.mockResolvedValue([]);
++    fetchMock.mockResolvedValue({ ok: true, status: 200, statusText: "OK" });
++
++    await shipMetricsToExecutor([
++      {
++        correlationId: "corr-1",
++        executionId: "exec-1",
++        workflowId: "wf-1",
++        triggerType: "event",
++        dispatchTarget: "k8s-job",
++        stage: "observed-broadcast",
++        durationMs: 4200,
++      },
++    ]);
++
++    expect(fetchMock).toHaveBeenCalledTimes(1);
++    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
++    expect(body.deltas).toEqual([]);
++    expect(body.observations).toHaveLength(1);
++    expect(body.observations[0].stage).toBe("observed-broadcast");
++  });
++
+   it("posts to /metrics/ingest, stripping a trailing slash from the base URL", async () => {
+     process.env.METRICS_COLLECTOR = "prometheus";
+     process.env.EXECUTOR_METRICS_INGEST_URL = "http://executor:3080/";
+diff --git a/keeperhub-executor/lib/ship-metrics.ts b/keeperhub-executor/lib/ship-metrics.ts
+index f0cd6fcc8..c17086db9 100644
+--- a/keeperhub-executor/lib/ship-metrics.ts
++++ b/keeperhub-executor/lib/ship-metrics.ts
+@@ -7,12 +7,18 @@
+  * observability never blocks workflow completion.
+  */
+ 
+-import { collectCounterDeltas, type IngestPayload } from "./metrics-shipping";
++import {
++  collectCounterDeltas,
++  type IngestPayload,
++  type LatencyObservation,
++} from "./metrics-shipping";
+ 
+ const SHIP_TIMEOUT_MS = 5000;
+ const TRAILING_SLASH = /\/$/;
+ 
+-export async function shipMetricsToExecutor(): Promise<void> {
++export async function shipMetricsToExecutor(
++  observations: LatencyObservation[] = []
++): Promise<void> {
+   if (process.env.METRICS_COLLECTOR !== "prometheus") {
+     return;
+   }
+@@ -30,7 +36,7 @@ export async function shipMetricsToExecutor(): Promise<void> {
+     return;
+   }
+ 
+-  if (deltas.length === 0) {
++  if (deltas.length === 0 && observations.length === 0) {
+     return;
+   }
+ 
+@@ -44,7 +50,10 @@ export async function shipMetricsToExecutor(): Promise<void> {
+         "Content-Type": "application/json",
+         "X-Ingest-Token": token,
+       },
+-      body: JSON.stringify({ deltas } satisfies IngestPayload),
++      body: JSON.stringify({
++        deltas,
++        ...(observations.length > 0 ? { observations } : {}),
++      } satisfies IngestPayload),
+       signal: AbortSignal.timeout(SHIP_TIMEOUT_MS),
+     });
+ 
+diff --git a/keeperhub-executor/lib/workflow-error-context-bootstrap.test.ts b/keeperhub-executor/lib/workflow-error-context-bootstrap.test.ts
+new file mode 100644
+index 000000000..fbc6e4b0a
+--- /dev/null
++++ b/keeperhub-executor/lib/workflow-error-context-bootstrap.test.ts
+@@ -0,0 +1,38 @@
++import { describe, expect, it } from "vitest";
++
++/**
++ * The production defect (PR review, second pass): the executor and
++ * workflow-runner Docker stages do not copy instrumentation.ts, so the
++ * async-local storage behind getWorkflowErrorContext() was never registered in
++ * those processes - currentExecutionId() returned undefined, markBroadcast()
++ * dropped the sidecar, and executor.broadcast.latency_ms stayed empty for
++ * in-process runs. The bootstrap module is the fix: a side-effect import that
++ * registers the storage, the same thing instrumentation.ts register() does in
++ * the Next runtime.
++ */
++describe("workflow error context bootstrap (non-Next processes)", () => {
++  it("registers the storage so entered context is readable", async () => {
++    // Import the bootstrap for its side effect (register the ALS storage).
++    await import("./workflow-error-context-bootstrap");
++    const { enterWorkflowErrorContext, getWorkflowErrorContext } =
++      await import("@/lib/workflow/executor/error-context");
++
++    // Before: getWorkflowErrorContext() was always undefined in these
++    // processes. After: entered context is readable across async legs.
++    expect(getWorkflowErrorContext()).toBeUndefined();
++    enterWorkflowErrorContext({ execution_id: "exec-boot-1" });
++    await Promise.resolve();
++    expect(getWorkflowErrorContext()?.execution_id).toBe("exec-boot-1");
++  });
++
++  it("makes the execution id resolvable the way markBroadcast reads it", async () => {
++    await import("./workflow-error-context-bootstrap");
++    const { enterWorkflowErrorContext } = await import(
++      "@/lib/workflow/executor/error-context"
++    );
++    const { currentExecutionId } = await import("./broadcast-marker");
++
++    enterWorkflowErrorContext({ execution_id: "exec-boot-2" });
++    expect(currentExecutionId()).toBe("exec-boot-2");
++  });
++});
+diff --git a/keeperhub-executor/lib/workflow-error-context-bootstrap.ts b/keeperhub-executor/lib/workflow-error-context-bootstrap.ts
+new file mode 100644
+index 000000000..522f4052a
+--- /dev/null
++++ b/keeperhub-executor/lib/workflow-error-context-bootstrap.ts
+@@ -0,0 +1,30 @@
++/**
++ * Register the async-local workflow error context storage for a non-Next.js
++ * process (the executor, the k8s workflow-runner, and the runner bootstrap).
++ *
++ * `lib/workflow/executor/error-context.ts` deliberately holds no Node
++ * builtins, because the Workflow DevKit bundles it; the actual
++ * AsyncLocalStorage instance is normally registered from `instrumentation.ts`
++ * behind `process.env.NEXT_RUNTIME === "nodejs"`. Neither the executor stage
++ * nor the workflow-runner stage of the Dockerfile copies `instrumentation.ts`
++ * (they build from a bare node:24-alpine and run via tsx), so without this
++ * module the storage stays null in production, `getWorkflowErrorContext()`
++ * always returns undefined, and every caller degrades silently:
++ *
++ *  - markBroadcast() cannot resolve its execution id, so the broadcast
++ *    sidecar is never written and executor.broadcast.latency_ms stays empty
++ *    for in-process runs (the interval issue #2289 asks for);
++ *  - error logs lose their workflow/org attribution.
++ *
++ * The engine (executor.workflow.ts) enters the per-run context via
++ * enterWorkflowErrorContext() at run start, so importing this module is the
++ * only step needed to make the context resolvable in these processes.
++ *
++ * Side-effect import only: importing this file IS the registration.
++ */
++
++import { AsyncLocalStorage } from "node:async_hooks";
++
++import { setWorkflowErrorContextStorage } from "@/lib/workflow/executor/error-context";
++
++setWorkflowErrorContextStorage(new AsyncLocalStorage());
 diff --git a/keeperhub-executor/message-schema.ts b/keeperhub-executor/message-schema.ts
-index 094557023..1493e3710 100644
+index 094557023..e836613b4 100644
 --- a/keeperhub-executor/message-schema.ts
 +++ b/keeperhub-executor/message-schema.ts
-@@ -49,6 +49,10 @@ const eventMessageSchema = z.object({
+@@ -1,4 +1,5 @@
+ import { z } from "zod";
++import { MAX_DATE_EPOCH_MS, SAFE_CORRELATION_ID } from "./latency";
+ import type { ExecutorMessage } from "./types";
+ 
+ /**
+@@ -49,6 +50,17 @@ const eventMessageSchema = z.object({
    // passes decoded event data through verbatim; keep this permissive so a
    // non-object payload never fails an already-authenticated message.
    triggerData: z.unknown(),
 +  // Latency correlation (issue #2289): optional so messages enqueued by
-+  // older trackers (without the fields) still validate and dispatch.
-+  correlationId: z.string().optional(),
-+  observedAt: z.number().optional(),
++  // older trackers (without the fields) still validate and dispatch. Both are
++  // bounded because both become load-bearing downstream: observedAt is
++  // rendered with `new Date(at).toISOString()` and correlationId is written
++  // into the runner Job's Kubernetes labels, where a 63-char cap and a
++  // restricted charset mean an over-long or slash-bearing value fails Job
++  // creation. Bounded here is the producer contract; the consumers
++  // (latency.ts, k8s-job.ts) additionally drop an unusable value, so a bad
++  // field is never the reason a transaction fails.
++  correlationId: z.string().regex(SAFE_CORRELATION_ID).optional(),
++  observedAt: z.number().safe().gte(0).lte(MAX_DATE_EPOCH_MS).optional(),
  });
  
  // manual and webhook share a shape but are separate literal branches so the
@@ -873,10 +3464,73 @@ index 12d413d55..e2d5d54f9 100644
  
  export type ManualMessage = {
 diff --git a/keeperhub-executor/workflow-runner.ts b/keeperhub-executor/workflow-runner.ts
-index ce60ffdde..b745c6e11 100644
+index ce60ffdde..42d3eb6b6 100644
 --- a/keeperhub-executor/workflow-runner.ts
 +++ b/keeperhub-executor/workflow-runner.ts
-@@ -199,7 +199,15 @@ async function main(): Promise<void> {
+@@ -37,13 +37,24 @@ import { SHUTDOWN_TIMEOUT_MS } from "../lib/workflow/executor/runner-constants";
+ import type { WorkflowEdge, WorkflowNode } from "../lib/workflow/store";
+ import { loadWorkflowForExecution } from "../lib/workflow/load-for-execution";
+ import type { ApiExecuteTriggerType } from "./api-execute";
++import { isRepresentableEpochMs } from "./latency";
+ import {
+   applyExecutionResult,
+   initializeExecutionProgress,
+   updateExecutionStatus,
+   updateScheduleStatus,
+ } from "./lib/db-helpers";
++import {
++  enableBroadcastMarkers,
++  peekBroadcastMarker,
++} from "./lib/broadcast-marker";
++import { collectLatencyObservations } from "./lib/latency-observations";
+ import { shipMetricsToExecutor } from "./lib/ship-metrics";
++// Register the async-local workflow error context: this process has no Next
++// instrumentation.ts (the Dockerfile does not copy it), so without this the
++// engine's enterWorkflowErrorContext() is a no-op and markBroadcast() cannot
++// resolve the execution id to stamp the sidecar marker with.
++import "./lib/workflow-error-context-bootstrap";
+ 
+ // Validate required environment variables
+ function validateEnv(): {
+@@ -117,15 +128,22 @@ let currentScheduleId: string | null = null;
+ // shipment rather than each starting their own.
+ let metricsShipment: Promise<void> | null = null;
+ 
++// Latency observations collected after the engine returned (issue #2289);
++// shipped together with the counter deltas in the single shared shipment.
++type PendingObservation = ReturnType<typeof collectLatencyObservations>[number];
++let pendingObservations: PendingObservation[] = [];
++
+ // The promise for the shutdown the first signal started. main() waits on it
+ // instead of returning, because returning runs the top-level process.exit and
+ // would kill the pod out from under a shutdown that has not written its
+ // terminal status yet - the write whose counters this all exists to ship.
+ let shutdownCompletion: Promise<void> | null = null;
+ 
+-function shipMetricsOnce(): Promise<void> {
++function shipMetricsOnce(
++  observations: PendingObservation[] = []
++): Promise<void> {
+   if (!metricsShipment) {
+-    metricsShipment = shipMetricsToExecutor();
++    metricsShipment = shipMetricsToExecutor(observations);
+   }
+   return metricsShipment;
+ }
+@@ -192,6 +210,12 @@ process.on("SIGTERM", () => onShutdownSignal("SIGTERM"));
+ process.on("SIGINT", () => onShutdownSignal("SIGINT"));
+ 
+ async function main(): Promise<void> {
++  // Gate the marker registry on: this process consumes its own execution's
++  // marker (takeBroadcastMarker after executeWorkflow), so it may populate.
++  // The web3 write paths this process runs through plugin steps then write
++  // their marker files into this pod's own emptyDir, where the take removes
++  // them. The Next app pod never calls this and never writes a marker file.
++  enableBroadcastMarkers();
+   const startTime = Date.now();
+   const { workflowId, executionId, input, triggerType, scheduleId } =
+     validateEnv();
+@@ -199,7 +223,15 @@ async function main(): Promise<void> {
    currentExecutionId = executionId;
    currentScheduleId = scheduleId ?? null;
  
@@ -893,16 +3547,57 @@ index ce60ffdde..b745c6e11 100644
    console.log(`[Runner] Workflow ID: ${workflowId}`);
    console.log(`[Runner] Execution ID: ${executionId}`);
    console.log(`[Runner] Schedule ID: ${scheduleId || "none"}`);
-@@ -276,7 +284,7 @@ async function main(): Promise<void> {
+@@ -275,8 +307,48 @@ async function main(): Promise<void> {
+       })
      );
  
++    // Latency instrumentation (issue #2289): the write path marked its
++    // broadcast into the per-execution sidecar (same pod). Peek (not take) so
++    // the observation collector below can still read the same record, log it
++    // joined on correlation id + execution id, and collect the point
++    // observations the pod ships back over the metrics ingest (Job pods
++    // cannot write the executor's histograms directly; point samples can).
++    const marker = peekBroadcastMarker(executionId);
++    if (marker) {
++      // Same guard as the executor side: this stamp is rendered as an ISO
++      // string, and a value outside the representable Date window would throw
++      // here - outside any try - and fail a run that already succeeded.
++      const broadcastAt = isRepresentableEpochMs(marker.broadcastAt)
++        ? new Date(marker.broadcastAt).toISOString()
++        : "unrepresentable";
++      console.log(
++        `[Runner] Broadcast stage: executionId=${executionId}${correlationSuffix} broadcastAt=${broadcastAt}`
++      );
++    }
++    const receivedAt = process.env.KH_RECEIVED_AT
++      ? Number(process.env.KH_RECEIVED_AT)
++      : undefined;
++    const observedAt = process.env.KH_OBSERVED_AT
++      ? Number(process.env.KH_OBSERVED_AT)
++      : undefined;
++    pendingObservations = collectLatencyObservations({
++      executionId,
++      workflowId,
++      triggerType,
++      receivedAt: Number.isFinite(receivedAt as number) ? receivedAt : undefined,
++      observedAt: Number.isFinite(observedAt as number) ? observedAt : undefined,
++      completedAt: Date.now(),
++    });
++    if (pendingObservations.length > 0) {
++      console.log(
++        `[Runner] Latency observations collected: ${pendingObservations
++          .map((o) => o.stage)
++          .join(",")}${correlationSuffix}`
++      );
++    }
++
      const duration = Date.now() - startTime;
 -    console.log(`[Runner] Workflow completed in ${duration}ms`);
 +    console.log(`[Runner] Workflow completed in ${duration}ms${correlationSuffix}`);
      console.log(`[Runner] Success: ${result.success}`);
  
      // executeWorkflow is the authoritative writer of the terminal status (with
-@@ -298,7 +306,7 @@ async function main(): Promise<void> {
+@@ -298,7 +370,7 @@ async function main(): Promise<void> {
      const errorMessage =
        error instanceof Error ? error.message : "Unknown error";
  
@@ -911,11 +3606,251 @@ index ce60ffdde..b745c6e11 100644
  
      let dbUpdateSucceeded = false;
      try {
+@@ -328,7 +400,7 @@ async function main(): Promise<void> {
+       // let main() resolve into process.exit before that write lands.
+       await shutdownCompletion;
+     } else {
+-      await shipMetricsOnce();
++      await shipMetricsOnce(pendingObservations);
+       await queryClient.end();
+       console.log("[Runner] Database connection closed");
+     }
+diff --git a/lib/metrics/METRICS_REFERENCE.md b/lib/metrics/METRICS_REFERENCE.md
+index 17622787d..74c9e5f96 100644
+--- a/lib/metrics/METRICS_REFERENCE.md
++++ b/lib/metrics/METRICS_REFERENCE.md
+@@ -61,6 +61,9 @@ Histogram metrics tracking duration/response times.
+ | `api.status.latency_ms` | Status polling response time | `status_code`, `status`, `execution_status` | P95 < 30ms | API |
+ | `plugin.action.duration_ms` | Plugin action execution time | `plugin_name`, `action_name`, `status` | P95 < 1000ms | API |
+ | `ai.generation.duration_ms` | AI workflow generation time | `status` | P95 < 5000ms | API |
++| `executor.dispatch.latency_ms` | SQS receive -> dispatch hand-off (or engine start for in-process runs) | `trigger_type`, `dispatch_target`, `stage` | P95 < 2500ms | Executor |
++| `executor.execution.latency_ms` | Full executor-visible lifetime (receive -> terminal, in-process runs) | `trigger_type`, `dispatch_target`, `stage` | P95 < 30000ms | Executor |
++| `executor.broadcast.latency_ms` | Trigger observed -> transaction broadcast (issue #2289) | `trigger_type`, `dispatch_target` | P95 < 10000ms | Executor |
+ 
+ ---
+ 
+@@ -698,6 +701,10 @@ Prometheus metrics are prefixed with `keeperhub_` and use snake_case:
+ | `api.status.latency_ms` | `keeperhub_api_status_latency_ms` | histogram |
+ | `plugin.action.duration_ms` | `keeperhub_plugin_action_duration_ms` | histogram |
+ | `ai.generation.duration_ms` | `keeperhub_ai_generation_duration_ms` | histogram |
++| `executor.dispatch.latency_ms` | `keeperhub_executor_dispatch_latency_ms` | histogram |
++| `executor.execution.latency_ms` | `keeperhub_executor_execution_latency_ms` | histogram |
++| `executor.broadcast.latency_ms` | `keeperhub_executor_broadcast_latency_ms` | histogram |
++| `executor.broadcasts.total` | `keeperhub_executor_broadcasts_total` | counter |
+ | `plugin.invocations.total` | `keeperhub_plugin_invocations_total` | counter |
+ | `plugin.action.errors` | `keeperhub_plugin_action_errors_total` | counter |
+ | `api.errors.total` | `keeperhub_api_errors_total` | counter |
+diff --git a/lib/metrics/__tests__/executor-latency.test.ts b/lib/metrics/__tests__/executor-latency.test.ts
+new file mode 100644
+index 000000000..8c535b830
+--- /dev/null
++++ b/lib/metrics/__tests__/executor-latency.test.ts
+@@ -0,0 +1,114 @@
++import { describe, expect, it, vi } from "vitest";
++
++// lib/metrics/collectors/prometheus.ts is server-only because it touches
++// prom-client's process-global registries. Stub server-only so this test can
++// load the module under vitest's node environment (same approach as
++// error-labels.test.ts).
++vi.mock("server-only", () => ({}));
++
++const { prometheusMetricsCollector, getApiProcessMetrics } = await import(
++  "@/lib/metrics/collectors/prometheus"
++);
++const { MetricNames, LabelKeys } = await import("@/lib/metrics/types");
++
++describe("executor latency histograms (issue #2289)", () => {
++  it("records a dispatch sample without logging Unknown latency metric", async () => {
++    // Registering the name in histogramMap is the whole point: before this,
++    // every sample was discarded with "[Prometheus] Unknown latency metric".
++    await prometheusMetricsCollector.recordLatency(
++      MetricNames.EXECUTOR_DISPATCH_LATENCY,
++      1234,
++      {
++        [LabelKeys.TRIGGER_TYPE]: "event",
++        [LabelKeys.DISPATCH_TARGET]: "k8s-job",
++        [LabelKeys.STAGE]: "dispatched",
++      }
++    );
++
++    const metrics = await getApiProcessMetrics();
++    expect(metrics).toContain("keeperhub_executor_dispatch_latency_ms");
++    expect(metrics).toContain('trigger_type="event"');
++    expect(metrics).toContain('dispatch_target="k8s-job"');
++    expect(metrics).toContain('stage="dispatched"');
++    // Exactly one observation landed in the histogram, in the 1234 <= 2500
++    // bucket (values live in _bucket lines; _count carries the sample count).
++    const family = metrics
++      .split("\n")
++      .find((line) =>
++        line.startsWith("keeperhub_executor_dispatch_latency_ms_count")
++      );
++    expect(family).toBeDefined();
++    expect(family).toContain("} 1");
++    const bucket = metrics
++      .split("\n")
++      .find((line) =>
++        line.startsWith(
++          'keeperhub_executor_dispatch_latency_ms_bucket{le="2500"'
++        )
++      );
++    expect(bucket).toBeDefined();
++    expect(bucket).toContain("} 1");
++  });
++
++  it("records an execution sample for in-process runs", async () => {
++    prometheusMetricsCollector.recordLatency(
++      MetricNames.EXECUTOR_EXECUTION_LATENCY,
++      5678,
++      {
++        [LabelKeys.TRIGGER_TYPE]: "schedule",
++        [LabelKeys.DISPATCH_TARGET]: "in-process",
++        [LabelKeys.STAGE]: "completed",
++      }
++    );
++
++    const metrics = await getApiProcessMetrics();
++    const family = metrics
++      .split("\n")
++      .find((line) =>
++        line.startsWith("keeperhub_executor_execution_latency_ms_count")
++      );
++    expect(family).toBeDefined();
++    expect(family).toContain("} 1");
++  });
++
++  it("records the observed -> broadcast distribution", async () => {
++    prometheusMetricsCollector.recordLatency(
++      MetricNames.EXECUTOR_BROADCAST_LATENCY,
++      4321,
++      {
++        [LabelKeys.TRIGGER_TYPE]: "event",
++        [LabelKeys.DISPATCH_TARGET]: "in-process",
++      }
++    );
++
++    const metrics = await getApiProcessMetrics();
++    const family = metrics
++      .split("\n")
++      .find((line) =>
++        line.startsWith("keeperhub_executor_broadcast_latency_ms_count")
++      );
++    expect(family).toBeDefined();
++    expect(family).toContain("} 1");
++  });
++
++  it("increments the broadcast counter", async () => {
++    prometheusMetricsCollector.incrementCounter(
++      MetricNames.EXECUTOR_BROADCASTS_TOTAL
++    );
++
++    const metrics = await getApiProcessMetrics();
++    const family = metrics
++      .split("\n")
++      .find((line) => line.startsWith("keeperhub_executor_broadcasts_total"));
++    // Label-less counter: no braces, plain "name 1".
++    expect(family).toBeDefined();
++    expect(family).toMatch(/ 1$/);
++  });
++
++  it("never labels latency histograms with the correlation id", () => {
++    // The correlation id is fresh per execution: labeling with it creates one
++    // time series per run (#2289 rules out even per-workflow labels). The id
++    // belongs in logs / KH_CORRELATION_ID only.
++    expect(Object.values(LabelKeys)).not.toContain("correlation_id");
++  });
++});
+diff --git a/lib/metrics/collectors/prometheus.ts b/lib/metrics/collectors/prometheus.ts
+index d5c290219..e317a5d2b 100644
+--- a/lib/metrics/collectors/prometheus.ts
++++ b/lib/metrics/collectors/prometheus.ts
+@@ -793,6 +793,65 @@ const aiDuration = getOrCreateHistogram(
+   [500, 1000, 2000, 5000, 10_000, 20_000]
+ );
+ 
++// Executor pipeline latency histograms (issue #2289) -> apiRegistry (per-pod,
++// scrape all pods). The executor records these in its own process for the
++// receive->dispatch hand-off and for in-process runs end-to-end.
++//
++// Runtime histograms are the right choice here despite the note above
++// histogramMap saying workflow execution/step metrics moved to DB-sourced
++// gauges: that decision covers workflow.execution.duration_ms and
++// workflow.step.duration_ms, whose per-row data the database already holds.
++// These two measure the SQS queue leg and the dispatch hand-off - intervals
++// between stages that happen in memory and leave no database timestamps - so
++// a DB-sourced gauge cannot reconstruct them. Deliberate exception, not an
++// oversight.
++const EXECUTOR_LATENCY_LABELS = ["trigger_type", "dispatch_target", "stage"];
++
++const executorDispatchLatency = getOrCreateHistogram(
++  apiRegistry,
++  "keeperhub_executor_dispatch_latency_ms",
++  "Time from SQS receive to the dispatch hand-off (or to engine start for in-process runs), split by trigger, dispatch target and stage",
++  EXECUTOR_LATENCY_LABELS,
++  [50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000]
++);
++
++const executorExecutionLatency = getOrCreateHistogram(
++  apiRegistry,
++  "keeperhub_executor_execution_latency_ms",
++  "Full executor-visible execution lifetime (SQS receive to terminal state) for in-process runs, split by trigger, dispatch target and stage",
++  EXECUTOR_LATENCY_LABELS,
++  [100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000, 300_000]
++);
++
++// The headline measurement issue #2289 asks for: the distribution of time
++// from the trigger event being observed by the tracker to the transaction
++// actually being broadcast to the chain. Populated where both endpoints are
++// known: in-process runs (sidecar marker read back after the run) and k8s-job
++// runs (the runner ships point observations over the counter-delta ingest,
++// which the executor folds into this histogram - see
++// keeperhub-executor/lib/metrics-shipping.ts and observation-applier.ts).
++const executorBroadcastLatency = getOrCreateHistogram(
++  apiRegistry,
++  "keeperhub_executor_broadcast_latency_ms",
++  "Time from trigger observed by the tracker to the transaction broadcast to the chain, split by trigger and dispatch target",
++  ["trigger_type", "dispatch_target"],
++  [250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000, 120_000, 300_000]
++);
++
++// Broadcast attempts, bumped by the process that performed the broadcast and
++// merged into the executor's registry via the counter-delta ingest. The
++// workflow.executions counters on Job pods use the same channel; the delta
++// ingest deliberately avoids re-scaling fleet-wide rates from per-pod totals,
++// so broadcast visibility is additive here rather than approximate.
++// Exported for the executor's pod-side shipping path (metrics-shipping), which
++// increments it locally before sending deltas over the ingest.
++export const executorBroadcastsTotal = getOrCreateCounter(
++  apiRegistry,
++  "keeperhub_executor_broadcasts_total",
++  "Transactions broadcast to the chain by executor-dispatched runs, merged from pod counter deltas",
++  []
++);
++
+ // Sponsorship counters
+ const SPONSORSHIP_LABELS = ["chain_id", "organization_id"];
+ 
+@@ -1550,9 +1609,15 @@ const histogramMap: Record<string, Histogram> = {
+   "api.status.latency_ms": statusLatency,
+   "plugin.action.duration_ms": pluginDuration,
+   "ai.generation.duration_ms": aiDuration,
++  // Executor pipeline latency (issue #2289). See the registration above for
++  // why these are runtime histograms rather than DB-sourced gauges.
++  "executor.dispatch.latency_ms": executorDispatchLatency,
++  "executor.execution.latency_ms": executorExecutionLatency,
++  "executor.broadcast.latency_ms": executorBroadcastLatency,
+ };
+ 
+ const counterMap: Record<string, Counter> = {
++  "executor.broadcasts.total": executorBroadcastsTotal,
+   "plugin.invocations.total": pluginInvocations,
+   "workflow.executions.started.total": workflowExecutionsStartedTotal,
+   "db.query.slow_count": slowQueries,
 diff --git a/lib/metrics/types.ts b/lib/metrics/types.ts
-index 5726e4a32..d61ef46b9 100644
+index 54a0777ab..0fd1a8506 100644
 --- a/lib/metrics/types.ts
 +++ b/lib/metrics/types.ts
-@@ -108,6 +108,12 @@ export const MetricNames = {
+@@ -108,6 +108,16 @@ export const MetricNames = {
    API_STATUS_LATENCY: "api.status.latency_ms",
    PLUGIN_ACTION_DURATION: "plugin.action.duration_ms",
    AI_GENERATION_DURATION: "ai.generation.duration_ms",
@@ -925,17 +3860,163 @@ index 5726e4a32..d61ef46b9 100644
 +  // independently.
 +  EXECUTOR_DISPATCH_LATENCY: "executor.dispatch.latency_ms",
 +  EXECUTOR_EXECUTION_LATENCY: "executor.execution.latency_ms",
++  // Tracker-observed -> transaction broadcast, the interval issue #2289 asks
++  // for the distribution of. Recorded where both endpoints are known
++  // (in-process runs read the broadcast sidecar after the run).
++  EXECUTOR_BROADCAST_LATENCY: "executor.broadcast.latency_ms",
  
    // Traffic metrics
    WORKFLOW_EXECUTIONS_TOTAL: "workflow.executions.total",
-@@ -249,6 +255,10 @@ export const LabelKeys = {
+@@ -145,6 +155,11 @@ export const MetricNames = {
+   // line cannot answer "is the shared limiter enforcing right now"; this
+   // counter can.
+   MCP_RATE_LIMIT_DEGRADED: "ratelimit.mcp.degraded.total",
++  // Broadcast-stage marker (issue #2289): bumped by the pod (or process) that
++  // performed the broadcast and shipped to the executor with the counter
++  // deltas, so the broadcast stage is observable even when the per-run
++  // sidecar timestamp cannot be read back.
++  EXECUTOR_BROADCASTS_TOTAL: "executor.broadcasts.total",
+ 
+   // Sponsorship metrics
+   SPONSORSHIP_TRANSACTIONS_TOTAL: "sponsorship.transactions.total",
+@@ -249,6 +264,13 @@ export const LabelKeys = {
    AUTH_RESULT: "auth_result",
    MODE: "mode",
    CLAIM_RESULT: "claim_result",
-+  // Latency instrumentation (issue #2289)
-+  CORRELATION_ID: "correlation_id",
++  // Latency instrumentation (issue #2289). The correlation id is deliberately
++  // NOT a label on any metric: it is fresh per execution, so labeling with it
++  // creates one time series per run (#2289 rules out even per-workflow labels
++  // as a metrics-cost problem). The id lives in the structured log lines,
++  // where it already joins executor, runner and tracker logs on one key.
 +  DISPATCH_TARGET: "dispatch_target",
 +  STAGE: "stage",
  } as const;
  
  /**
+diff --git a/lib/web3/chain-adapter/evm.ts b/lib/web3/chain-adapter/evm.ts
+index 003ff1850..818e3e52e 100644
+--- a/lib/web3/chain-adapter/evm.ts
++++ b/lib/web3/chain-adapter/evm.ts
+@@ -1,4 +1,5 @@
+ import { ethers } from "ethers";
++import { markBroadcast } from "@/keeperhub-executor/lib/broadcast-marker";
+ import { logWarn } from "@/lib/logging";
+ import type { RpcProviderManager } from "@/lib/rpc/providers";
+ import { sleep } from "@/lib/sleep";
+@@ -112,15 +113,21 @@ export class EvmChainAdapter implements ChainAdapter {
+       maxPriorityFeePerGas: gasConfig.maxPriorityFeePerGas,
+       chainId: this.chainId,
+     };
+-    const tx = options.rpcManager
+-      ? (
+-          await submitSignedTransactionWithFailover(
+-            signer,
+-            txRequest,
+-            options.rpcManager
+-          )
+-        ).response
+-      : await signer.sendTransaction(txRequest);
++    let tx: ethers.TransactionResponse;
++    if (options.rpcManager) {
++      tx = (
++        await submitSignedTransactionWithFailover(
++          signer,
++          txRequest,
++          options.rpcManager
++        )
++      ).response;
++    } else {
++      tx = await signer.sendTransaction(txRequest);
++    }
++    // Issue #2289: the transaction is on the wire - record the broadcast
++    // stage (sidecar marker + process-local counter, best-effort).
++    markBroadcast();
+ 
+     return this.confirmTransaction(tx, session, nonce, gasConfig, options);
+   }
+@@ -238,6 +245,9 @@ export class EvmChainAdapter implements ChainAdapter {
+         ...(request.value ? { value: request.value } : {}),
+       });
+     }
++    // Issue #2289: the transaction is on the wire - record the broadcast
++    // stage (sidecar marker + process-local counter, best-effort).
++    markBroadcast();
+ 
+     return this.confirmTransaction(tx, session, nonce, gasConfig, options);
+   }
+diff --git a/lib/web3/chain-adapter/solana.ts b/lib/web3/chain-adapter/solana.ts
+index f62a0bf9d..a6a8656c5 100644
+--- a/lib/web3/chain-adapter/solana.ts
++++ b/lib/web3/chain-adapter/solana.ts
+@@ -5,6 +5,7 @@ import {
+   VersionedTransaction,
+ } from "@solana/web3.js";
+ import type { ethers } from "ethers";
++import { markBroadcast } from "@/keeperhub-executor/lib/broadcast-marker";
+ import { logWarn } from "@/lib/logging";
+ import type { RpcProviderManager } from "@/lib/rpc/providers";
+ import type { RpcOperationType } from "@/lib/rpc/providers/index";
+@@ -327,6 +328,9 @@ export class SolanaChainAdapter implements ChainAdapter {
+             : { delayMs: this.timings.reconcileDelayMs }
+         );
+         signature = submitResult.signature;
++        // Issue #2289: the transaction is on the wire - record the broadcast
++        // stage (sidecar marker + process-local counter, best-effort).
++        markBroadcast();
+         break;
+       } catch (error) {
+         if (attempt === 0 && isSolanaBlockhashExpiryError(error)) {
+diff --git a/lib/web3/sponsored-transaction-manager.ts b/lib/web3/sponsored-transaction-manager.ts
+index fbd54bdd2..837849f1f 100644
+--- a/lib/web3/sponsored-transaction-manager.ts
++++ b/lib/web3/sponsored-transaction-manager.ts
+@@ -7,6 +7,7 @@ import {
+   http,
+   type PublicClient,
+ } from "viem";
++import { markBroadcast } from "@/keeperhub-executor/lib/broadcast-marker";
+ import {
+   checkGasCredits,
+   getGasTokenPriceUsd,
+@@ -138,6 +139,10 @@ export async function executeSponsoredTransaction(
+     return null;
+   }
+ 
++  // Issue #2289: Turnkey's Gas Station has broadcast the transaction from its
++  // own infrastructure - record the broadcast stage (best-effort).
++  markBroadcast();
++
+   return await settleSponsoredTx(
+     submitResult.txHash,
+     submitResult.sendTransactionStatusId,
+@@ -204,6 +209,10 @@ export async function executeSponsoredContractTransaction(
+     return null;
+   }
+ 
++  // Issue #2289: Turnkey's Gas Station has broadcast the transaction from its
++  // own infrastructure - record the broadcast stage (best-effort).
++  markBroadcast();
++
+   return await settleSponsoredTx(
+     submitResult.txHash,
+     submitResult.sendTransactionStatusId,
+diff --git a/lib/workflow/executor/executor.workflow.ts b/lib/workflow/executor/executor.workflow.ts
+index 5c2cd8ca1..6396d0e58 100644
+--- a/lib/workflow/executor/executor.workflow.ts
++++ b/lib/workflow/executor/executor.workflow.ts
+@@ -2387,6 +2387,15 @@ export async function executeWorkflow(input: WorkflowExecutionInput) {
+   // Enter async-local context so any logUserError/logSystemError called from
+   // this point on (including inside plugin steps) automatically includes
+   // org/owner/workflow identifiers without manual threading.
++  //
++  // Mechanism note: enterWorkflowErrorContext uses ALS enterWith, which
++  // mutates the current async resource's store rather than scoping a callback
++  // like run() does. That is the weaker of the two mechanisms, and it holds
++  // here because by the time executeWorkflow runs, concurrent in-process
++  // executions are on distinct async resources, so each mutation lands on its
++  // own store. The step-level runWithWorkflowErrorContext in step-handler.ts
++  // is a proper run() and is the path web3 writes actually take, so plugin
++  // execution is scoped by the stronger mechanism regardless.
+   enterWorkflowErrorContext({
+     workflow_id: workflowId,
+     execution_id: executionId,
