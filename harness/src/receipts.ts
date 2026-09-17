@@ -13,11 +13,27 @@ import { fileURLToPath } from 'node:url'
 const RECEIPTS_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'receipts', 'receipts.json')
 
 export interface Receipt {
-  type: 'guard-cycle' | 'campaign-execution' | 'drill'
+  type: 'guard-cycle' | 'campaign-execution' | 'drill' | 'rescue'
   timestamp: string
   position: string
   /** Human label for the watched position (multi-position watchlist); absent on legacy rows. */
   positionLabel?: string
+  /**
+   * True when the defended position belongs to someone else (third-party rescue).
+   * The receipt says so explicitly rather than implying we were at risk.
+   */
+  external?: boolean
+  /** The account whose position was defended — the `onBehalfOf` of the write. */
+  protectedUser?: string
+  /**
+   * The threshold in force when the decision was made.
+   *
+   * Without this field a receipt cannot be audited: the same health factor can be
+   * 'protect' or 'stand-down' depending on the policy, and the campaign's
+   * escalation mode moves it between cycles. Rows written before this field
+   * existed carry no threshold and cannot be re-judged — see EVIDENCE.md.
+   */
+  threshold?: number
   healthFactorBefore: string | null
   healthFactorAfter: string | null
   decision: string

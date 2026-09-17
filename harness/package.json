@@ -7,6 +7,8 @@
   "scripts": {
     "guard": "tsx src/guard.ts",
     "campaign": "tsx src/campaign.ts",
+    "find:at-risk": "tsx scripts/find-at-risk.ts",
+    "rescue": "tsx scripts/rescue-external.ts",
     "typecheck": "tsc --noEmit",
     "approve": "tsx scripts/approve-reserve.ts",
     "mint": "tsx scripts/mint-reserve.ts",

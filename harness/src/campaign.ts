@@ -44,6 +44,9 @@ async function main() {
   for (const p of watchlist) {
     const guardian = root.forPosition(p)
     const nonce = `${Date.now().toString(36)}-${i}`
+    // The policy this round is judged under. Captured before any escalation so
+    // the receipt records the threshold that produced the decision.
+    const thresholdInForce = p.threshold
     try {
       const snapshot = await guardian.detect()
       const hf = Number(snapshot.healthFactor) / 1e18
@@ -57,6 +60,7 @@ async function main() {
           timestamp: new Date().toISOString(),
           position: p.address,
           positionLabel: guardian.label(),
+          threshold: thresholdInForce,
           healthFactorBefore: snapshot.healthFactor,
           healthFactorAfter: null,
           decision: 'stand-down',
@@ -81,17 +85,24 @@ async function main() {
       const after = protection.status === 'completed' ? await guardian.verify() : null
       if (escalate && after?.healthFactor) {
         // Each 5 LINK top-up raises the health factor by ~2.25 and the verify
-        // read can lag one round behind the chain, so a small +0.5 margin lets
-        // the threshold catch up with the rising HF and the run stalls. Use a
-        // margin above the per-round gain so the threshold always stays ahead.
-        guardian.setThreshold(Number(after.healthFactor) / 1e18 + 2.6)
-        console.log(`      → threshold escalated to ${(Number(after.healthFactor) / 1e18 + 2.6).toFixed(2)}`)
+        // read can lag one round behind the chain, so the margin sits above the
+        // per-round gain and the threshold always stays ahead.
+        //
+        // The escalated value has to be written back to the watchlist entry: the
+        // next round builds a fresh Guardian through forPosition(), so
+        // setThreshold() alone is discarded and the threshold silently resets to
+        // the configured base on every round.
+        const escalated = Number(after.healthFactor) / 1e18 + 2.6
+        p.threshold = escalated
+        guardian.setThreshold(escalated)
+        console.log(`      → threshold escalated to ${escalated.toFixed(2)} (persisted for the next round)`)
       }
       const receipt: Receipt = {
         type: 'campaign-execution',
         timestamp: new Date().toISOString(),
         position: p.address,
         positionLabel: guardian.label(),
+        threshold: thresholdInForce,
         healthFactorBefore: snapshot.healthFactor,
         healthFactorAfter: after?.healthFactor ?? null,
         decision,
