@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-09-18T11:25:16.176Z",
-  "count": 1358,
+  "generatedAt": "2026-09-19T11:08:12.267Z",
+  "count": 1360,
   "receipts": [
     {
       "type": "campaign-execution",
@@ -20917,6 +20917,42 @@
       "executionId": "7rs3iwfi5y37e3yak7180",
       "status": "completed",
       "error": null
+    },
+    {
+      "type": "campaign-execution",
+      "timestamp": "2026-09-19T11:08:11.937Z",
+      "position": "0xf3F9aAbe2aC0Fd841DFfE116867ab76D2b582897",
+      "positionLabel": "0xf3F9…2897",
+      "threshold": 3000,
+      "healthFactorBefore": "2600137081751487794894",
+      "healthFactorAfter": null,
+      "decision": "protect",
+      "action": "top-up",
+      "asset": "LINK",
+      "amount": "5",
+      "refused": true,
+      "txHash": null,
+      "executionId": null,
+      "status": "failed",
+      "error": "Error(ERC20: transfer amount exceeds balance)"
+    },
+    {
+      "type": "campaign-execution",
+      "timestamp": "2026-09-19T11:08:12.263Z",
+      "position": "0xf3F9aAbe2aC0Fd841DFfE116867ab76D2b582897",
+      "positionLabel": "0xf3F9…2897",
+      "threshold": 3000,
+      "healthFactorBefore": "2600137081751487794894",
+      "healthFactorAfter": null,
+      "decision": "protect",
+      "action": "top-up",
+      "asset": "LINK",
+      "amount": "5",
+      "refused": true,
+      "txHash": null,
+      "executionId": null,
+      "status": "failed",
+      "error": "Error(ERC20: transfer amount exceeds balance)"
     }
   ]
 }
