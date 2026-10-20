@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-10-19T13:31:13.111Z",
-  "count": 1420,
+  "generatedAt": "2026-10-20T11:47:39.011Z",
+  "count": 1422,
   "receipts": [
     {
       "type": "campaign-execution",
@@ -22033,6 +22033,32 @@
       "executionId": null,
       "status": "failed",
       "error": "Error(ERC20: transfer amount exceeds balance)"
+    },
+    {
+      "type": "campaign-execution",
+      "timestamp": "2026-10-20T11:47:38.885Z",
+      "position": "0xf3F9aAbe2aC0Fd841DFfE116867ab76D2b582897",
+      "positionLabel": "0xf3F9…2897",
+      "threshold": 3000,
+      "healthFactorBefore": "3005857680726896538350",
+      "healthFactorAfter": null,
+      "decision": "stand-down",
+      "action": "stand-down",
+      "txHash": null,
+      "status": "ok"
+    },
+    {
+      "type": "campaign-execution",
+      "timestamp": "2026-10-20T11:47:39.001Z",
+      "position": "0xf3F9aAbe2aC0Fd841DFfE116867ab76D2b582897",
+      "positionLabel": "0xf3F9…2897",
+      "threshold": 3000,
+      "healthFactorBefore": "3005857680726896538350",
+      "healthFactorAfter": null,
+      "decision": "stand-down",
+      "action": "stand-down",
+      "txHash": null,
+      "status": "ok"
     }
   ]
 }
