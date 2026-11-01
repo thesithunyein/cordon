@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-10-31T12:43:36.467Z",
-  "count": 1444,
+  "generatedAt": "2026-11-01T13:34:14.938Z",
+  "count": 1446,
   "receipts": [
     {
       "type": "campaign-execution",
@@ -22340,6 +22340,32 @@
       "positionLabel": "0xf3F9…2897",
       "threshold": 3000,
       "healthFactorBefore": "3166790616832951328030",
+      "healthFactorAfter": null,
+      "decision": "stand-down",
+      "action": "stand-down",
+      "txHash": null,
+      "status": "ok"
+    },
+    {
+      "type": "campaign-execution",
+      "timestamp": "2026-11-01T13:34:14.791Z",
+      "position": "0xf3F9aAbe2aC0Fd841DFfE116867ab76D2b582897",
+      "positionLabel": "0xf3F9…2897",
+      "threshold": 3000,
+      "healthFactorBefore": "3182414336862800848885",
+      "healthFactorAfter": null,
+      "decision": "stand-down",
+      "action": "stand-down",
+      "txHash": null,
+      "status": "ok"
+    },
+    {
+      "type": "campaign-execution",
+      "timestamp": "2026-11-01T13:34:14.929Z",
+      "position": "0xf3F9aAbe2aC0Fd841DFfE116867ab76D2b582897",
+      "positionLabel": "0xf3F9…2897",
+      "threshold": 3000,
+      "healthFactorBefore": "3182414336862800848885",
       "healthFactorAfter": null,
       "decision": "stand-down",
       "action": "stand-down",
